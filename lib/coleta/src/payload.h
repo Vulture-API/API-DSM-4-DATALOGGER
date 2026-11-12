@@ -11,9 +11,14 @@ namespace coleta {
 constexpr uint32_t UNIX_TIME_MINIMO = 1704067200;
 
 // local_identifier dos sensores cadastrados para a estação no backend.
+// Construtor explícito: o core Arduino do ESP32 compila em C++11, que não
+// aceita Identificadores{a, b} em struct com valor padrão nos campos.
 struct Identificadores {
-  const char* temperatura = "temp";
-  const char* umidade = "umid";
+  const char* temperatura;
+  const char* umidade;
+
+  constexpr Identificadores(const char* temperaturaId = "temp", const char* umidadeId = "umid")
+      : temperatura(temperaturaId), umidade(umidadeId) {}
 };
 
 enum class Rejeicao {

@@ -24,7 +24,8 @@ Mesmo formato do simulador do INFRA:
 ## Configuração
 
 1. Copie `include/secrets.example.h` para `include/secrets.h` (fora do git) e preencha Wi-Fi e broker.
-2. Cadastre a estação com o MAC mostrado na serial e os sensores `temp` e `umid`.
+2. Cadastre a estação com o MAC mostrado na serial (na inicialização ou no comando `status`) e os sensores `temp` e `umid`.
+3. O broker precisa aceitar conexão pela rede: no INFRA local a porta do Mosquitto só atende o próprio computador por padrão (ver `MQTT_BIND` no `.env.example` do INFRA).
 
 ## Comandos
 
@@ -37,7 +38,7 @@ pio test -e native              # testes da lógica, sem placa
 Pela serial:
 
 - `intervalo 120` muda a frequência de coleta (10 a 3600 s) e grava na flash
-- `status` mostra intervalo, Wi-Fi, MQTT e contadores de coleta e falha
+- `status` mostra MAC, intervalo, Wi-Fi, MQTT e contadores de coleta e falha
 
 ## Organização
 

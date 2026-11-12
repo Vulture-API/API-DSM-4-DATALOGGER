@@ -30,6 +30,8 @@ char mac[18];
 char topico[48];
 char clientId[32];
 
+constexpr uint32_t ESPERA_INICIAL_MS = 20000;
+
 uint32_t tentativasMqtt = 0;
 uint32_t proximaTentativaMs = 0;
 bool estavaConectado = false;
@@ -128,7 +130,7 @@ void lerComando() {
   if (!Serial.available()) return;
   String linha = Serial.readStringUntil('\n');
   linha.trim();
-  char msg[200];
+  char msg[280];
   if (linha.startsWith("intervalo ")) {
     const long segundos = linha.substring(10).toInt();
     if (segundos > 0 && salvarIntervalo(static_cast<uint32_t>(segundos))) {
@@ -142,7 +144,7 @@ void lerComando() {
   } else if (linha == "status") {
     char resumo[180];
     status.resumo(resumo, sizeof resumo);
-    snprintf(msg, sizeof msg, "intervalo=%lus wifi=%s mqtt=%s %s",
+    snprintf(msg, sizeof msg, "estacao=%s intervalo=%lus wifi=%s mqtt=%s %s", mac,
              static_cast<unsigned long>(agendador.intervaloS()),
              WiFi.status() == WL_CONNECTED ? "ok" : "off", mqtt.connected() ? "ok" : "off", resumo);
     escreverLog("INFO", msg);
@@ -168,6 +170,16 @@ void setup() {
   snprintf(msg, sizeof msg, "estacao %s, topico %s, intervalo %lus", mac, topico,
            static_cast<unsigned long>(agendador.intervaloS()));
   escreverLog("INFO", msg);
+
+  // A primeira coleta sai logo no início do loop. Espera um pouco por Wi-Fi e
+  // NTP para ela não ser descartada (e o DHT22 precisa de ~2 s depois de ligar).
+  const uint32_t inicio = millis();
+  while (millis() - inicio < ESPERA_INICIAL_MS &&
+         (millis() - inicio < 2000 || WiFi.status() != WL_CONNECTED ||
+          static_cast<uint32_t>(time(nullptr)) < UNIX_TIME_MINIMO)) {
+    delay(200);
+  }
+  if (WiFi.status() != WL_CONNECTED) escreverLog("WARN", "Wi-Fi ainda nao conectou; seguindo e tentando em segundo plano");
 }
 
 void loop() {
