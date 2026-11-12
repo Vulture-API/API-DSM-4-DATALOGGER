@@ -11,6 +11,7 @@
 #include "payload.h"
 #include "pinos.h"
 #include "secrets.h"
+#include "sensores.h"
 #include "status.h"
 
 using namespace coleta;
@@ -24,13 +25,15 @@ Preferences preferencias;
 
 Agendador agendador;
 StatusColeta status;
-const Identificadores identificadores{ID_SENSOR_TEMPERATURA, ID_SENSOR_UMIDADE};
-
 char mac[18];
 char topico[48];
 char clientId[32];
+bool configuracaoOk = false;
 
 constexpr uint32_t ESPERA_INICIAL_MS = 20000;
+// Cabe a mensagem com MAXIMO_SENSORES campos; o pacote MQTT leva também o tópico.
+constexpr size_t TAMANHO_PAYLOAD = 320;
+constexpr uint16_t TAMANHO_PACOTE_MQTT = 512;
 
 uint32_t tentativasMqtt = 0;
 uint32_t proximaTentativaMs = 0;
@@ -89,23 +92,45 @@ void manterMqtt() {
   proximaTentativaMs = millis() + atrasoReconexaoMs(tentativasMqtt++);
 }
 
-void coletarEPublicar() {
-  const Leitura leitura = avaliarLeitura(dht.readTemperature(), dht.readHumidity());
+float lerBruto(const Sensor& sensor) {
+  switch (sensor.fonte) {
+    case Fonte::Dht22Temperatura:
+      return dht.readTemperature();
+    case Fonte::Dht22Umidade:
+      return dht.readHumidity();
+    case Fonte::Analogico:
+      return static_cast<float>(analogRead(sensor.pino));
+    case Fonte::Digital:
+      return static_cast<float>(digitalRead(sensor.pino));
+  }
+  return NAN;
+}
 
-  if (leitura.vazia()) {
+void coletarEPublicar() {
+  if (!configuracaoOk) return;
+
+  Medida medidas[MAXIMO_SENSORES];
+  char msg[96];
+  for (size_t i = 0; i < QUANTIDADE_SENSORES; i++) {
+    medidas[i] = avaliarMedida(SENSORES[i], lerBruto(SENSORES[i]));
+    if (!medidas[i].ok) {
+      snprintf(msg, sizeof msg, "sensor %s sem leitura valida", SENSORES[i].identificador);
+      escreverLog("WARN", msg);
+    }
+  }
+
+  const size_t validas = contarValidas(medidas, QUANTIDADE_SENSORES);
+  if (validas == 0) {
     status.registrar(Evento::FalhaSensor);
-    escreverLog("ERRO", status.sensorComProblema() ? "DHT22 sem leitura ha 3 coletas" : "DHT22 sem leitura");
+    escreverLog("ERRO", status.sensorComProblema() ? "nenhum sensor com leitura ha 3 coletas"
+                                                   : "nenhum sensor com leitura");
     return;
   }
-  status.registrar(leitura.completa() ? Evento::ColetaCompleta : Evento::ColetaParcial);
-  if (!leitura.completa()) {
-    escreverLog("WARN", leitura.temperaturaOk ? "umidade invalida, enviada so a temperatura"
-                                      : "temperatura invalida, enviada so a umidade");
-  }
+  status.registrar(validas == QUANTIDADE_SENSORES ? Evento::ColetaCompleta : Evento::ColetaParcial);
 
-  char payload[160];
-  const Rejeicao motivo = montarPayload(mac, static_cast<uint32_t>(time(nullptr)), leitura,
-                                        identificadores, payload, sizeof payload);
+  char payload[TAMANHO_PAYLOAD];
+  const Rejeicao motivo = montarPayload(mac, static_cast<uint32_t>(time(nullptr)), medidas,
+                                        QUANTIDADE_SENSORES, payload, sizeof payload);
   if (motivo != Rejeicao::Nenhuma) {
     status.registrar(Evento::PayloadRejeitado);
     escreverLog("WARN", descrever(motivo));
@@ -144,8 +169,8 @@ void lerComando() {
   } else if (linha == "status") {
     char resumo[180];
     status.resumo(resumo, sizeof resumo);
-    snprintf(msg, sizeof msg, "estacao=%s intervalo=%lus wifi=%s mqtt=%s %s", mac,
-             static_cast<unsigned long>(agendador.intervaloS()),
+    snprintf(msg, sizeof msg, "estacao=%s sensores=%u intervalo=%lus wifi=%s mqtt=%s %s", mac,
+             static_cast<unsigned>(QUANTIDADE_SENSORES), static_cast<unsigned long>(agendador.intervaloS()),
              WiFi.status() == WL_CONNECTED ? "ok" : "off", mqtt.connected() ? "ok" : "off", resumo);
     escreverLog("INFO", msg);
   }
@@ -158,6 +183,19 @@ void setup() {
   dht.begin();
   carregarIntervalo();
 
+  const ErroConfiguracao erro = validarConfiguracao(SENSORES, QUANTIDADE_SENSORES);
+  configuracaoOk = erro == ErroConfiguracao::Nenhum;
+  if (!configuracaoOk) {
+    char aviso[96];
+    snprintf(aviso, sizeof aviso, "sensores mal configurados em config.h (%s): nada sera coletado", descrever(erro));
+    escreverLog("ERRO", aviso);
+  }
+  for (size_t i = 0; configuracaoOk && i < QUANTIDADE_SENSORES; i++) {
+    if (SENSORES[i].fonte == Fonte::Analogico || SENSORES[i].fonte == Fonte::Digital) {
+      pinMode(SENSORES[i].pino, INPUT);
+    }
+  }
+
   conectarWifi();
   strncpy(mac, WiFi.macAddress().c_str(), sizeof mac - 1);
   montarTopico(mac, topico, sizeof topico);
@@ -165,10 +203,11 @@ void setup() {
 
   configTime(0, 0, "pool.ntp.org", "time.google.com");
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
+  mqtt.setBufferSize(TAMANHO_PACOTE_MQTT);
 
-  char msg[96];
-  snprintf(msg, sizeof msg, "estacao %s, topico %s, intervalo %lus", mac, topico,
-           static_cast<unsigned long>(agendador.intervaloS()));
+  char msg[128];
+  snprintf(msg, sizeof msg, "estacao %s, topico %s, intervalo %lus, %u sensores", mac, topico,
+           static_cast<unsigned long>(agendador.intervaloS()), static_cast<unsigned>(QUANTIDADE_SENSORES));
   escreverLog("INFO", msg);
 
   // A primeira coleta sai logo no início do loop. Espera um pouco por Wi-Fi e

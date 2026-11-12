@@ -17,7 +17,8 @@ Mesmo formato do simulador do INFRA:
 ```
 
 - `estacao_id` é o MAC do ESP32, que precisa estar cadastrado como estação no backend.
-- `temp` e `umid` são os `local_identifier` dos sensores dessa estação (ajuste em `include/config.h` se o cadastro usar outros).
+- `temp` e `umid` são os `local_identifier` dos sensores dessa estação. A lista de sensores fica na tabela `SENSORES` de `include/config.h`: cada linha é um campo do payload.
+- Outros sensores (entrada analógica ou digital) entram por essa tabela, sem mudar a rotina de coleta. O valor enviado é o bruto; o sistema converte com o ganho e o offset do cadastro. Passo a passo em [docs/hardware.md](docs/hardware.md).
 - Leitura que falhou não entra; sem nenhuma leitura válida, nada é publicado.
 - Só publica com o relógio sincronizado por NTP.
 
@@ -56,6 +57,6 @@ O backend já guarda a frequência por estação (`GET/PUT /api/stations/:id/col
 
 ## Falhas
 
-- Sensor: `DHT22 sem leitura` (e aviso depois de 3 seguidas); leitura parcial manda só o que leu.
+- Sensor: `sensor <identificador> sem leitura valida`; os demais são enviados. Sem nenhuma leitura, nada é publicado (e há aviso depois de 3 coletas seguidas).
 - Comunicação: Wi-Fi reconecta sozinho; MQTT tenta de novo com espera de 1 s até 60 s, sem travar a coleta.
 - `status` separa falhas de sensor de falhas de comunicação. Estação sem comunicação e ocorrências continuam com o backend, que percebe pelo silêncio da estação.

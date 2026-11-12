@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "leitura.h"
+#include "sensores.h"
 
 namespace coleta {
 
@@ -39,6 +40,11 @@ bool macValido(const char* mac);
 // sem nenhuma, a mensagem não é montada.
 Rejeicao montarPayload(const char* mac, uint32_t unixTime, const Leitura& leitura,
                        const Identificadores& ids, char* destino, size_t tamanho);
+
+// Mesmo contrato, com um campo por medida válida (SCRUM-603). Medida que
+// falhou não entra; sem nenhuma válida, a mensagem não é montada.
+Rejeicao montarPayload(const char* mac, uint32_t unixTime, const Medida* medidas, size_t quantidade,
+                       char* destino, size_t tamanho);
 
 // estacoes/<MAC>/dados
 bool montarTopico(const char* mac, char* destino, size_t tamanho);
