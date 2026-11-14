@@ -6,17 +6,6 @@
 
 namespace coleta {
 
-namespace {
-// Identificador vai entre aspas no JSON: só letras, números, "_" e "-".
-bool identificadorValido(const char* id) {
-  if (id == nullptr || *id == '\0') return false;
-  for (const char* c = id; *c; c++) {
-    if (!std::isalnum(static_cast<unsigned char>(*c)) && *c != '_' && *c != '-') return false;
-  }
-  return true;
-}
-}  // namespace
-
 const char* descrever(Rejeicao motivo) {
   switch (motivo) {
     case Rejeicao::Nenhuma:
@@ -50,12 +39,21 @@ bool macValido(const char* mac) {
 
 Rejeicao montarPayload(const char* mac, uint32_t unixTime, const Leitura& leitura,
                        const Identificadores& ids, char* destino, size_t tamanho) {
+  const Medida medidas[] = {
+      {ids.temperatura, leitura.temperatura, leitura.temperaturaOk},
+      {ids.umidade, leitura.umidade, leitura.umidadeOk},
+  };
+  return montarPayload(mac, unixTime, medidas, 2, destino, tamanho);
+}
+
+Rejeicao montarPayload(const char* mac, uint32_t unixTime, const Medida* medidas, size_t quantidade,
+                       char* destino, size_t tamanho) {
   if (!macValido(mac)) return Rejeicao::MacInvalido;
   if (unixTime < UNIX_TIME_MINIMO) return Rejeicao::RelogioNaoSincronizado;
-  if (leitura.vazia()) return Rejeicao::SemLeituraValida;
+  if (medidas == nullptr || contarValidas(medidas, quantidade) == 0) return Rejeicao::SemLeituraValida;
 
-  if (!identificadorValido(ids.temperatura) || !identificadorValido(ids.umidade)) {
-    return Rejeicao::IdentificadorInvalido;
+  for (size_t i = 0; i < quantidade; i++) {
+    if (!identificadorValido(medidas[i].identificador)) return Rejeicao::IdentificadorInvalido;
   }
 
   size_t usado = 0;
@@ -79,8 +77,9 @@ Rejeicao montarPayload(const char* mac, uint32_t unixTime, const Leitura& leitur
     return Rejeicao::BufferPequeno;
   }
   usado = static_cast<size_t>(n);
-  if (leitura.temperaturaOk) anexar(",\"%s\":%.2f", ids.temperatura, leitura.temperatura);
-  if (leitura.umidadeOk) anexar(",\"%s\":%.2f", ids.umidade, leitura.umidade);
+  for (size_t i = 0; i < quantidade; i++) {
+    if (medidas[i].ok) anexar(",\"%s\":%.2f", medidas[i].identificador, medidas[i].valor);
+  }
   anexar("}", nullptr, 0);
   if (!coube) {
     destino[0] = '\0';

@@ -236,6 +236,152 @@ void test_espera_de_reconexao_cresce_ate_60_segundos() {
   TEST_ASSERT_EQUAL_UINT32(60000, atrasoReconexaoMs(1000));
 }
 
+// SCRUM-603: sensores configuráveis
+
+const Sensor DHT_TEMP{"temp", Fonte::Dht22Temperatura, 4};
+const Sensor DHT_UMID{"umid", Fonte::Dht22Umidade, 4};
+const Sensor LUX{"lux", Fonte::Analogico, 34};
+const Sensor PORTA{"porta", Fonte::Digital, 27};
+
+void test_configuracao_so_com_dht22_e_valida() {
+  const Sensor sensores[] = {DHT_TEMP, DHT_UMID};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(sensores, 2)));
+}
+
+void test_configuracao_aceita_sensores_adicionais() {
+  const Sensor sensores[] = {DHT_TEMP, DHT_UMID, LUX, PORTA};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(sensores, 4)));
+}
+
+void test_configuracao_vazia_ou_grande_demais_e_recusada() {
+  Sensor muitos[MAXIMO_SENSORES + 1];
+  const char* nomes[] = {"s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"};
+  for (size_t i = 0; i <= MAXIMO_SENSORES; i++) muitos[i] = Sensor{nomes[i], Fonte::Digital, 27};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::SemSensores), static_cast<int>(validarConfiguracao(muitos, 0)));
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::SemSensores), static_cast<int>(validarConfiguracao(nullptr, 2)));
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum),
+                    static_cast<int>(validarConfiguracao(muitos, MAXIMO_SENSORES)));
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::SensoresDemais),
+                    static_cast<int>(validarConfiguracao(muitos, MAXIMO_SENSORES + 1)));
+}
+
+void test_identificador_invalido_na_configuracao_e_recusado() {
+  for (const char* id : {"", "com espaco", "aspas\"", "acentuação"}) {
+    const Sensor sensores[] = {DHT_TEMP, Sensor{id, Fonte::Digital, 27}};
+    TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::IdentificadorInvalido),
+                      static_cast<int>(validarConfiguracao(sensores, 2)));
+  }
+  const Sensor semNome[] = {Sensor{nullptr, Fonte::Digital, 27}};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::IdentificadorInvalido),
+                    static_cast<int>(validarConfiguracao(semNome, 1)));
+}
+
+void test_identificador_repetido_ou_reservado_e_recusado() {
+  const Sensor repetido[] = {DHT_TEMP, Sensor{"TEMP", Fonte::Analogico, 34}};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::IdentificadorRepetido),
+                    static_cast<int>(validarConfiguracao(repetido, 2)));
+  for (const char* id : {"estacao_id", "unix_time", "Unix_Time"}) {
+    const Sensor reservado[] = {Sensor{id, Fonte::Digital, 27}};
+    TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::IdentificadorReservado),
+                      static_cast<int>(validarConfiguracao(reservado, 1)));
+  }
+}
+
+void test_entrada_analogica_so_nos_pinos_que_funcionam_com_wifi() {
+  for (int pino : {32, 34, 36, 39}) {
+    const Sensor sensores[] = {Sensor{"lux", Fonte::Analogico, pino}};
+    TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(sensores, 1)));
+  }
+  for (int pino : {4, 25, 31, 40}) {
+    const Sensor sensores[] = {Sensor{"lux", Fonte::Analogico, pino}};
+    TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::PinoAnalogicoInvalido),
+                      static_cast<int>(validarConfiguracao(sensores, 1)));
+  }
+  const Sensor digital[] = {Sensor{"porta", Fonte::Digital, 4}};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(digital, 1)));
+}
+
+void test_faixa_valida_depende_da_fonte() {
+  TEST_ASSERT_TRUE(valorValido(Fonte::Dht22Temperatura, -40.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Dht22Temperatura, 80.1f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Dht22Umidade, 100.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Dht22Umidade, -0.1f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Analogico, 0.0f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Analogico, 4095.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Analogico, 4096.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Analogico, -1.0f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Digital, 0.0f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Digital, 1.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Digital, 0.5f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Analogico, NAN_F));
+}
+
+void test_medida_guarda_o_identificador_e_o_valor_bruto() {
+  const Medida boa = avaliarMedida(LUX, 2048.0f);
+  TEST_ASSERT_TRUE(boa.ok);
+  TEST_ASSERT_EQUAL_STRING("lux", boa.identificador);
+  TEST_ASSERT_EQUAL_FLOAT(2048.0f, boa.valor);
+  const Medida ruim = avaliarMedida(DHT_TEMP, NAN_F);
+  TEST_ASSERT_FALSE(ruim.ok);
+  TEST_ASSERT_EQUAL_STRING("temp", ruim.identificador);
+}
+
+void test_payload_com_varios_sensores_tem_um_campo_por_sensor() {
+  const Medida medidas[] = {avaliarMedida(DHT_TEMP, 23.456f), avaliarMedida(DHT_UMID, 61.0f),
+                            avaliarMedida(LUX, 2048.0f), avaliarMedida(PORTA, 1.0f)};
+  char buffer[320];
+  const Rejeicao motivo = montarPayload(MAC, AGORA, medidas, 4, buffer, sizeof buffer);
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::Nenhuma), static_cast<int>(motivo));
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"estacao_id\":\"24:6F:28:AB:CD:EF\",\"unix_time\":1794100000,"
+      "\"temp\":23.46,\"umid\":61.00,\"lux\":2048.00,\"porta\":1.00}",
+      buffer);
+}
+
+void test_falha_de_um_sensor_nao_impede_o_envio_dos_demais() {
+  const Medida medidas[] = {avaliarMedida(DHT_TEMP, NAN_F), avaliarMedida(DHT_UMID, NAN_F),
+                            avaliarMedida(LUX, 300.0f)};
+  char buffer[320];
+  TEST_ASSERT_EQUAL(1, static_cast<int>(contarValidas(medidas, 3)));
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::Nenhuma),
+                    static_cast<int>(montarPayload(MAC, AGORA, medidas, 3, buffer, sizeof buffer)));
+  TEST_ASSERT_EQUAL_STRING("{\"estacao_id\":\"24:6F:28:AB:CD:EF\",\"unix_time\":1794100000,\"lux\":300.00}", buffer);
+}
+
+void test_nenhuma_medida_valida_nao_monta_payload() {
+  const Medida medidas[] = {avaliarMedida(DHT_TEMP, NAN_F), avaliarMedida(LUX, 5000.0f)};
+  char buffer[320] = "intacto";
+  TEST_ASSERT_EQUAL(0, static_cast<int>(contarValidas(medidas, 2)));
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::SemLeituraValida),
+                    static_cast<int>(montarPayload(MAC, AGORA, medidas, 2, buffer, sizeof buffer)));
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::SemLeituraValida),
+                    static_cast<int>(montarPayload(MAC, AGORA, nullptr, 0, buffer, sizeof buffer)));
+}
+
+void test_payload_com_o_maximo_de_sensores_cabe_no_buffer_do_firmware() {
+  const char* nomes[] = {"temperatura_ar", "umidade_ar", "luminosidade", "umidade_solo",
+                         "temperatura_solo", "pressao_atm", "vento_veloc", "chuva_calha"};
+  Medida medidas[MAXIMO_SENSORES];
+  for (size_t i = 0; i < MAXIMO_SENSORES; i++) medidas[i] = Medida{nomes[i], 4095.0f, true};
+  char buffer[320];
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::Nenhuma),
+                    static_cast<int>(montarPayload(MAC, AGORA, medidas, MAXIMO_SENSORES, buffer, sizeof buffer)));
+  TEST_ASSERT_TRUE(std::strlen(buffer) < 320);
+  char pequeno[64];
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::BufferPequeno),
+                    static_cast<int>(montarPayload(MAC, AGORA, medidas, MAXIMO_SENSORES, pequeno, sizeof pequeno)));
+  TEST_ASSERT_EQUAL_STRING("", pequeno);
+}
+
+void test_estacao_so_com_dht22_gera_o_mesmo_payload_de_antes() {
+  char antigo[160];
+  char novo[160];
+  montarPayload(MAC, AGORA, avaliarLeitura(23.456f, 61.0f), Identificadores{}, antigo, sizeof antigo);
+  const Medida medidas[] = {avaliarMedida(DHT_TEMP, 23.456f), avaliarMedida(DHT_UMID, 61.0f)};
+  montarPayload(MAC, AGORA, medidas, 2, novo, sizeof novo);
+  TEST_ASSERT_EQUAL_STRING(antigo, novo);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_intervalo_aceita_limites_e_rejeita_fora_da_faixa);
@@ -264,5 +410,18 @@ int main() {
   RUN_TEST(test_coleta_bem_sucedida_zera_as_falhas_seguidas);
   RUN_TEST(test_resumo_mostra_reconexoes);
   RUN_TEST(test_espera_de_reconexao_cresce_ate_60_segundos);
+  RUN_TEST(test_configuracao_so_com_dht22_e_valida);
+  RUN_TEST(test_configuracao_aceita_sensores_adicionais);
+  RUN_TEST(test_configuracao_vazia_ou_grande_demais_e_recusada);
+  RUN_TEST(test_identificador_invalido_na_configuracao_e_recusado);
+  RUN_TEST(test_identificador_repetido_ou_reservado_e_recusado);
+  RUN_TEST(test_entrada_analogica_so_nos_pinos_que_funcionam_com_wifi);
+  RUN_TEST(test_faixa_valida_depende_da_fonte);
+  RUN_TEST(test_medida_guarda_o_identificador_e_o_valor_bruto);
+  RUN_TEST(test_payload_com_varios_sensores_tem_um_campo_por_sensor);
+  RUN_TEST(test_falha_de_um_sensor_nao_impede_o_envio_dos_demais);
+  RUN_TEST(test_nenhuma_medida_valida_nao_monta_payload);
+  RUN_TEST(test_payload_com_o_maximo_de_sensores_cabe_no_buffer_do_firmware);
+  RUN_TEST(test_estacao_so_com_dht22_gera_o_mesmo_payload_de_antes);
   return UNITY_END();
 }

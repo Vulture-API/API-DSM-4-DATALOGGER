@@ -36,6 +36,55 @@ O pino está em `include/pinos.h`. GPIO4 não interfere no boot do ESP32 (difere
 - Leitura a cada intervalo de coleta (mínimo 10 s; o DHT22 precisa de 2 s entre leituras).
 - `NaN` ou valor fora da faixa do sensor é falha de leitura e não vai para o payload.
 
+## Outros sensores (SCRUM-603)
+
+Os sensores da estação ficam na tabela `SENSORES` de `include/config.h`. Cada linha vira um campo do payload, com o valor bruto lido. A conversão para a unidade do parâmetro é feita pelo sistema, com o ganho e o offset cadastrados para o sensor.
+
+| Fonte | Leitura | Valor enviado | Pinos |
+| --- | --- | --- | --- |
+| `Dht22Temperatura` | temperatura do DHT22 | °C, de -40 a 80 | `PINO_DHT` |
+| `Dht22Umidade` | umidade do DHT22 | %, de 0 a 100 | `PINO_DHT` |
+| `Analogico` | tensão no pino, pelo ADC de 12 bits | 0 a 4095 (0 a 3,3 V) | só GPIO 32 a 39 |
+| `Digital` | nível do pino | 0 ou 1 | qualquer GPIO de entrada |
+
+Para incluir um sensor:
+
+1. Ligue o sensor. Sinal analógico só nos GPIO 32 a 39: os outros pinos analógicos do ESP32 não leem com o Wi-Fi ligado. O sinal não pode passar de 3,3 V.
+2. Acrescente uma linha em `SENSORES` com identificador, fonte e pino, e grave o firmware.
+3. No sistema, cadastre o tipo (se ainda não existir) e o sensor na estação, com o **mesmo identificador**.
+4. Informe o ganho e o offset do sensor para converter o valor bruto.
+
+Exemplo, sensor de luminosidade (LDR em divisor de tensão no GPIO34):
+
+```cpp
+{"lux", coleta::Fonte::Analogico, 34},
+```
+
+No cadastro, um ganho de `0,000805860805` (3,3 / 4095) grava a leitura em volts; o ganho e o offset do fabricante convertem para lux.
+
+Limites: até 8 sensores por estação; identificadores sem repetição, só com letras, números, `_` e `-`. Configuração inválida aparece na serial ao ligar e a estação não coleta. Sensor que falha fica fora da mensagem e os demais são enviados.
+
 ## Registro da montagem
 
-Preencher depois de montar: foto da protoboard, MAC impresso na serial na inicialização e resultado do comando `status`.
+Montagem validada na bancada em 14/11/2026.
+
+| Item | Valor |
+|---|---|
+| Placa | ESP32 WROOM-32 DevKit (Arduino IDE 2.3.11, core esp32 3.3.12, Dev Module, COM3) |
+| MAC / `estacao_id` | `AC:67:B2:3C:2B:78` |
+| DHT22 | dados no GPIO4 (identificadores `temp` e `umid`) |
+| LDR (opcional) | divisor 3V3 → LDR → GPIO34 → 10 kΩ → GND (identificador `lux`, ganho `0,000805860805`) |
+| Tópico | `estacoes/AC:67:B2:3C:2B:78/dados` |
+| Upload | velocidade 115200 (921600 falhou na verificação da flash) |
+
+Resultado do `status` com a estação coletando:
+
+```
+estacao=AC:67:B2:3C:2B:78 sensores=2 intervalo=60s wifi=ok mqtt=ok coletas=23 parciais=0
+```
+
+Comandos seriais: `intervalo 20` aceito (o `status` seguinte mostrou 20 s); `intervalo 5` recusado com "use de 10 a 3600 s".
+
+Ponta a ponta: broker → Redis (`telemetry:ingest`) → `readings` no PostgreSQL → página da estação no site, com temperatura e umidade atualizando a cada coleta (28 °C e 73 % em média na bancada). Leituras enviadas antes de cadastrar os sensores foram para a quarentena com motivo `unknown_sensor`, como esperado.
+
+LDR: o sensor `lux` chegou ao site, mas leu 0 a 0,1 V mesmo com luz. Aguardando verificação da ligação; o sensor ficou desativado no cadastro.
