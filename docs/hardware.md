@@ -66,4 +66,25 @@ Limites: até 8 sensores por estação; identificadores sem repetição, só com
 
 ## Registro da montagem
 
-Preencher depois de montar: foto da protoboard, MAC impresso na serial na inicialização e resultado do comando `status`.
+Montagem validada na bancada em 14/11/2026.
+
+| Item | Valor |
+|---|---|
+| Placa | ESP32 WROOM-32 DevKit (Arduino IDE 2.3.11, core esp32 3.3.12, Dev Module, COM3) |
+| MAC / `estacao_id` | `AC:67:B2:3C:2B:78` |
+| DHT22 | dados no GPIO4 (identificadores `temp` e `umid`) |
+| LDR (opcional) | divisor 3V3 → LDR → GPIO34 → 10 kΩ → GND (identificador `lux`, ganho `0,000805860805`) |
+| Tópico | `estacoes/AC:67:B2:3C:2B:78/dados` |
+| Upload | velocidade 115200 (921600 falhou na verificação da flash) |
+
+Resultado do `status` com a estação coletando:
+
+```
+estacao=AC:67:B2:3C:2B:78 sensores=2 intervalo=60s wifi=ok mqtt=ok coletas=23 parciais=0
+```
+
+Comandos seriais: `intervalo 20` aceito (o `status` seguinte mostrou 20 s); `intervalo 5` recusado com "use de 10 a 3600 s".
+
+Ponta a ponta: broker → Redis (`telemetry:ingest`) → `readings` no PostgreSQL → página da estação no site, com temperatura e umidade atualizando a cada coleta (28 °C e 73 % em média na bancada). Leituras enviadas antes de cadastrar os sensores foram para a quarentena com motivo `unknown_sensor`, como esperado.
+
+LDR: o sensor `lux` chegou ao site, mas leu 0 a 0,1 V mesmo com luz. Aguardando verificação da ligação; o sensor ficou desativado no cadastro.
