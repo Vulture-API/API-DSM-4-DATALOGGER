@@ -4,6 +4,7 @@
 #include <initializer_list>
 #include <limits>
 
+#include "alarme.h"
 #include "intervalo.h"
 #include "leitura.h"
 #include "payload.h"
@@ -382,6 +383,140 @@ void test_estacao_so_com_dht22_gera_o_mesmo_payload_de_antes() {
   TEST_ASSERT_EQUAL_STRING(antigo, novo);
 }
 
+// Buzzer: alarme só para falha que persiste
+
+namespace {
+const uint32_t MINUTO = 60UL * 1000UL;
+}  // namespace
+
+void test_falha_curta_nao_toca() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Conexao, true, 0);
+  TEST_ASSERT_TRUE(alarme.verificar(29 * MINUTO).vazio());
+  alarme.atualizar(Falha::Conexao, false, 29 * MINUTO);
+  TEST_ASSERT_TRUE(alarme.verificar(31 * MINUTO).vazio());
+}
+
+void test_falha_persistente_toca_depois_de_30_minutos() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Sensor, true, 0);
+  TEST_ASSERT_TRUE(alarme.verificar(PERSISTENCIA_MS - 1).vazio());
+  const Aviso aviso = alarme.verificar(PERSISTENCIA_MS);
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Sensor), aviso.falhas);
+  TEST_ASSERT_FALSE(aviso.normalizou);
+}
+
+void test_falha_que_volta_reinicia_a_contagem() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Hora, true, 0);
+  alarme.atualizar(Falha::Hora, false, 20 * MINUTO);
+  alarme.atualizar(Falha::Hora, true, 25 * MINUTO);
+  TEST_ASSERT_TRUE(alarme.verificar(40 * MINUTO).vazio());
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Hora), alarme.verificar(55 * MINUTO).falhas);
+}
+
+void test_alarme_repete_a_cada_30_minutos_enquanto_durar() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Conexao, true, 0);
+  TEST_ASSERT_FALSE(alarme.verificar(30 * MINUTO).vazio());
+  TEST_ASSERT_TRUE(alarme.verificar(31 * MINUTO).vazio());
+  TEST_ASSERT_TRUE(alarme.verificar(59 * MINUTO).vazio());
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Conexao), alarme.verificar(60 * MINUTO).falhas);
+}
+
+void test_configuracao_invalida_toca_na_hora() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Configuracao, true, 1000);
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Configuracao), alarme.verificar(1000).falhas);
+}
+
+void test_nova_falha_durante_o_alarme_toca_na_hora_com_as_duas() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Sensor, true, 0);
+  alarme.atualizar(Falha::Conexao, true, 10 * MINUTO);
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Sensor), alarme.verificar(30 * MINUTO).falhas);
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Sensor) | mascaraDe(Falha::Conexao), alarme.verificar(40 * MINUTO).falhas);
+}
+
+void test_avisa_uma_vez_quando_normaliza() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Sensor, true, 0);
+  alarme.verificar(30 * MINUTO);
+  alarme.atualizar(Falha::Sensor, false, 35 * MINUTO);
+  const Aviso aviso = alarme.verificar(35 * MINUTO);
+  TEST_ASSERT_TRUE(aviso.normalizou);
+  TEST_ASSERT_EQUAL_UINT8(0, aviso.falhas);
+  TEST_ASSERT_TRUE(alarme.verificar(36 * MINUTO).vazio());
+}
+
+void test_falha_que_nao_chegou_a_tocar_nao_avisa_normalizacao() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Sensor, true, 0);
+  alarme.verificar(10 * MINUTO);
+  alarme.atualizar(Falha::Sensor, false, 11 * MINUTO);
+  TEST_ASSERT_TRUE(alarme.verificar(11 * MINUTO).vazio());
+}
+
+void test_alarme_continua_certo_quando_millis_da_a_volta() {
+  Alarme alarme;
+  const uint32_t inicio = 0xFFFFFFFFUL - 5 * MINUTO;
+  alarme.atualizar(Falha::Conexao, true, inicio);
+  TEST_ASSERT_TRUE(alarme.verificar(inicio + 29 * MINUTO).vazio());
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Conexao), alarme.verificar(inicio + 30 * MINUTO).falhas);
+}
+
+void test_cada_falha_tem_um_codigo_de_bipes() {
+  TEST_ASSERT_EQUAL_UINT8(2, bipesDe(Falha::Sensor));
+  TEST_ASSERT_EQUAL_UINT8(3, bipesDe(Falha::Conexao));
+  TEST_ASSERT_EQUAL_UINT8(4, bipesDe(Falha::Hora));
+  TEST_ASSERT_EQUAL_UINT8(5, bipesDe(Falha::Configuracao));
+}
+
+void test_bipador_toca_o_codigo_sem_bloquear() {
+  Bipador bipador;
+  Aviso aviso;
+  aviso.falhas = mascaraDe(Falha::Sensor);
+  bipador.tocar(aviso, 1000);
+  TEST_ASSERT_TRUE(bipador.ligado(1000));
+  TEST_ASSERT_TRUE(bipador.ligado(1000 + Bipador::BIPE_MS - 1));
+  TEST_ASSERT_FALSE(bipador.ligado(1000 + Bipador::BIPE_MS));
+  TEST_ASSERT_TRUE(bipador.ligado(1000 + Bipador::BIPE_MS + Bipador::PAUSA_BIPE_MS));
+  const uint32_t fimDoSegundo = 1000 + 2 * Bipador::BIPE_MS + Bipador::PAUSA_BIPE_MS;
+  TEST_ASSERT_FALSE(bipador.ligado(fimDoSegundo));
+  TEST_ASSERT_TRUE(bipador.tocando(fimDoSegundo));
+  TEST_ASSERT_FALSE(bipador.tocando(fimDoSegundo + Bipador::PAUSA_GRUPO_MS));
+}
+
+void test_bipador_normalizou_e_um_bipe_longo() {
+  Bipador bipador;
+  Aviso aviso;
+  aviso.normalizou = true;
+  bipador.tocar(aviso, 0);
+  TEST_ASSERT_TRUE(bipador.ligado(Bipador::BIPE_NORMALIZOU_MS - 1));
+  TEST_ASSERT_FALSE(bipador.ligado(Bipador::BIPE_NORMALIZOU_MS));
+}
+
+void test_bipador_parado_fica_desligado() {
+  Bipador bipador;
+  TEST_ASSERT_FALSE(bipador.ligado(0));
+  TEST_ASSERT_FALSE(bipador.tocando(12345));
+}
+
+void test_bipador_com_todas_as_falhas_toca_os_14_bipes() {
+  Bipador bipador;
+  Aviso aviso;
+  for (size_t i = 0; i < QUANTIDADE_FALHAS; i++) aviso.falhas |= mascaraDe(static_cast<Falha>(i));
+  bipador.tocar(aviso, 0);
+  int bipes = 0;
+  bool anterior = false;
+  for (uint32_t t = 0; t < bipador.duracaoMs(); t += 10) {
+    const bool agora = bipador.ligado(t);
+    if (agora && !anterior) bipes++;
+    anterior = agora;
+  }
+  TEST_ASSERT_EQUAL_INT(14, bipes);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_intervalo_aceita_limites_e_rejeita_fora_da_faixa);
@@ -423,5 +558,19 @@ int main() {
   RUN_TEST(test_nenhuma_medida_valida_nao_monta_payload);
   RUN_TEST(test_payload_com_o_maximo_de_sensores_cabe_no_buffer_do_firmware);
   RUN_TEST(test_estacao_so_com_dht22_gera_o_mesmo_payload_de_antes);
+  RUN_TEST(test_falha_curta_nao_toca);
+  RUN_TEST(test_falha_persistente_toca_depois_de_30_minutos);
+  RUN_TEST(test_falha_que_volta_reinicia_a_contagem);
+  RUN_TEST(test_alarme_repete_a_cada_30_minutos_enquanto_durar);
+  RUN_TEST(test_configuracao_invalida_toca_na_hora);
+  RUN_TEST(test_nova_falha_durante_o_alarme_toca_na_hora_com_as_duas);
+  RUN_TEST(test_avisa_uma_vez_quando_normaliza);
+  RUN_TEST(test_falha_que_nao_chegou_a_tocar_nao_avisa_normalizacao);
+  RUN_TEST(test_alarme_continua_certo_quando_millis_da_a_volta);
+  RUN_TEST(test_cada_falha_tem_um_codigo_de_bipes);
+  RUN_TEST(test_bipador_toca_o_codigo_sem_bloquear);
+  RUN_TEST(test_bipador_normalizou_e_um_bipe_longo);
+  RUN_TEST(test_bipador_parado_fica_desligado);
+  RUN_TEST(test_bipador_com_todas_as_falhas_toca_os_14_bipes);
   return UNITY_END();
 }
