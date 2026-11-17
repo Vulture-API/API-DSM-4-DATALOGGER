@@ -8,6 +8,8 @@
 | Sensor | DHT22 / AM2302 | temperatura do ar (-40 a 80 °C, ±0,5 °C) e umidade relativa (0 a 100 %, ±2 %) |
 | Resistor | 10 kΩ | pull-up da linha de dados (dispensável no módulo com placa, que já traz) |
 | Alimentação | cabo USB 5 V | ESP32 e, pelo pino 3V3, o sensor |
+| Buzzer | ativo 3,3 V a 5 V (só liga/desliga) | alarme de falha persistente (SCRUM-619) |
+| Transistor | BC547 (NPN) + resistor de 1 kΩ | aciona o buzzer sem puxar corrente do GPIO |
 | Montagem | protoboard e jumpers | — |
 
 O DHT22 funciona em 3,3 V e usa um fio de dados digital próprio (não é I²C), então liga direto no ESP32 sem conversor de nível. Os dois parâmetros já existem no catálogo do sistema (tipos "Temperatura" e "Umidade"); nenhum parâmetro novo foi criado.
@@ -63,6 +65,30 @@ Exemplo, sensor de luminosidade (LDR em divisor de tensão no GPIO34):
 No cadastro, um ganho de `0,000805860805` (3,3 / 4095) grava a leitura em volts; o ganho e o offset do fabricante convertem para lux.
 
 Limites: até 8 sensores por estação; identificadores sem repetição, só com letras, números, `_` e `-`. Configuração inválida aparece na serial ao ligar e a estação não coleta. Sensor que falha fica fora da mensagem e os demais são enviados.
+
+## Buzzer (SCRUM-619)
+
+O buzzer toca só falha que dura: queda curta de Wi-Fi ou sensor que perde uma coleta fica no log e no `status`, sem som.
+
+| Ligação | ESP32 |
+| --- | --- |
+| GPIO25 → 1 kΩ → base do BC547 | GPIO25 |
+| buzzer `+` | 3V3 (ou VIN, 5 V, para buzzer de 5 V) |
+| buzzer `-` → coletor do BC547 | — |
+| emissor do BC547 | GND |
+
+Buzzer pequeno de 3,3 V que puxa menos de 20 mA pode ir direto: `+` no GPIO25 e `-` no GND. Módulo de 3 pinos que apita com o I/O em nível baixo: `BUZZER_LIGA_EM_ALTO = false` em `include/pinos.h`.
+
+| Falha | Quando toca | Bipes |
+| --- | --- | --- |
+| sensor | algum sensor sem leitura válida por 30 min | 2 |
+| conexão | Wi-Fi ou MQTT fora do ar por 30 min | 3 |
+| hora | relógio sem NTP por 30 min (nada é publicado) | 4 |
+| configuração | `config.h` inválido, na inicialização | 5 |
+
+Com mais de uma falha os códigos tocam em sequência, com 1 s entre eles. O toque se repete a cada 30 min enquanto a falha durar e de novo na hora se outra falha passar dos 30 min. Quando tudo volta, um bipe longo. Os tempos ficam em `lib/coleta/src/alarme.h` (`PERSISTENCIA_MS` e `REPETICAO_MS`).
+
+Pela serial: `buzzer teste` toca os quatro códigos; `buzzer off` e `buzzer on` desligam e religam o som (grava na flash, o alarme continua no log); `status` mostra `buzzer=on|off` e `alarmes=` com as falhas confirmadas.
 
 ## Registro da montagem
 

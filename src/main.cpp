@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <time.h>
 
+#include "alarme.h"
 #include "config.h"
 #include "intervalo.h"
 #include "leitura.h"
@@ -30,6 +31,10 @@ char topico[48];
 char clientId[32];
 bool configuracaoOk = false;
 
+Alarme alarme;
+Bipador bipador;
+bool buzzerLigado = true;
+
 constexpr uint32_t ESPERA_INICIAL_MS = 20000;
 // Cabe a mensagem com MAXIMO_SENSORES campos; o pacote MQTT leva também o tópico.
 constexpr size_t TAMANHO_PAYLOAD = 320;
@@ -48,6 +53,56 @@ void carregarIntervalo() {
   const uint32_t salvo = preferencias.getUInt("intervalo_s", INTERVALO_PADRAO_S);
   preferencias.end();
   if (!agendador.configurar(salvo)) agendador.configurar(INTERVALO_PADRAO_S);
+}
+
+void carregarBuzzer() {
+  preferencias.begin("datalogger", true);
+  buzzerLigado = preferencias.getBool("buzzer", true);
+  preferencias.end();
+}
+
+void salvarBuzzer(bool ligado) {
+  buzzerLigado = ligado;
+  preferencias.begin("datalogger", false);
+  preferencias.putBool("buzzer", ligado);
+  preferencias.end();
+}
+
+size_t listarFalhas(uint8_t mascara, char* destino, size_t tamanho) {
+  size_t n = 0;
+  destino[0] = '\0';
+  for (size_t i = 0; i < QUANTIDADE_FALHAS; i++) {
+    const Falha falha = static_cast<Falha>(i);
+    if ((mascara & mascaraDe(falha)) == 0) continue;
+    const int escrito = snprintf(destino + n, tamanho - n, "%s%s", n ? "," : "", nomeDe(falha));
+    if (escrito < 0 || static_cast<size_t>(escrito) >= tamanho - n) break;
+    n += static_cast<size_t>(escrito);
+  }
+  if (n == 0) snprintf(destino, tamanho, "nenhum");
+  return n;
+}
+
+// Falha curta não apita: o alarme só toca o que já dura PERSISTENCIA_MS.
+void cuidarAlarme() {
+  const uint32_t agora = millis();
+  alarme.atualizar(Falha::Conexao, WiFi.status() != WL_CONNECTED || !mqtt.connected(), agora);
+  alarme.atualizar(Falha::Hora, static_cast<uint32_t>(time(nullptr)) < UNIX_TIME_MINIMO, agora);
+
+  const Aviso aviso = alarme.verificar(agora);
+  if (!aviso.vazio()) {
+    char falhas[48];
+    listarFalhas(aviso.falhas, falhas, sizeof falhas);
+    char msg[96];
+    if (aviso.normalizou) {
+      snprintf(msg, sizeof msg, "alarme encerrado: falhas normalizadas%s", buzzerLigado ? "" : " (buzzer desligado)");
+    } else {
+      snprintf(msg, sizeof msg, "alarme: %s%s", falhas, buzzerLigado ? "" : " (buzzer desligado)");
+    }
+    escreverLog(aviso.normalizou ? "INFO" : "WARN", msg);
+    if (buzzerLigado) bipador.tocar(aviso, agora);
+  }
+  const bool ligar = bipador.ligado(agora);
+  digitalWrite(PINO_BUZZER, ligar == BUZZER_LIGA_EM_ALTO ? HIGH : LOW);
 }
 
 bool salvarIntervalo(uint32_t segundos) {
@@ -120,6 +175,7 @@ void coletarEPublicar() {
   }
 
   const size_t validas = contarValidas(medidas, QUANTIDADE_SENSORES);
+  alarme.atualizar(Falha::Sensor, validas < QUANTIDADE_SENSORES, millis());
   if (validas == 0) {
     status.registrar(Evento::FalhaSensor);
     escreverLog("ERRO", status.sensorComProblema() ? "nenhum sensor com leitura ha 3 coletas"
@@ -150,12 +206,12 @@ void coletarEPublicar() {
   }
 }
 
-// Comandos pela serial: "intervalo <segundos>" e "status".
+// Comandos pela serial: "intervalo <segundos>", "status" e "buzzer on|off|teste".
 void lerComando() {
   if (!Serial.available()) return;
   String linha = Serial.readStringUntil('\n');
   linha.trim();
-  char msg[280];
+  char msg[360];
   if (linha.startsWith("intervalo ")) {
     const long segundos = linha.substring(10).toInt();
     if (segundos > 0 && salvarIntervalo(static_cast<uint32_t>(segundos))) {
@@ -169,10 +225,21 @@ void lerComando() {
   } else if (linha == "status") {
     char resumo[180];
     status.resumo(resumo, sizeof resumo);
-    snprintf(msg, sizeof msg, "estacao=%s sensores=%u intervalo=%lus wifi=%s mqtt=%s %s", mac,
+    char alarmes[48];
+    listarFalhas(alarme.confirmadas(millis()), alarmes, sizeof alarmes);
+    snprintf(msg, sizeof msg, "estacao=%s sensores=%u intervalo=%lus wifi=%s mqtt=%s buzzer=%s alarmes=%s %s", mac,
              static_cast<unsigned>(QUANTIDADE_SENSORES), static_cast<unsigned long>(agendador.intervaloS()),
-             WiFi.status() == WL_CONNECTED ? "ok" : "off", mqtt.connected() ? "ok" : "off", resumo);
+             WiFi.status() == WL_CONNECTED ? "ok" : "off", mqtt.connected() ? "ok" : "off",
+             buzzerLigado ? "on" : "off", alarmes, resumo);
     escreverLog("INFO", msg);
+  } else if (linha == "buzzer on" || linha == "buzzer off") {
+    salvarBuzzer(linha == "buzzer on");
+    escreverLog("INFO", buzzerLigado ? "buzzer ligado" : "buzzer desligado");
+  } else if (linha == "buzzer teste") {
+    Aviso todos;
+    for (size_t i = 0; i < QUANTIDADE_FALHAS; i++) todos.falhas |= mascaraDe(static_cast<Falha>(i));
+    bipador.tocar(todos, millis());
+    escreverLog("INFO", "buzzer teste: sensor 2, conexao 3, hora 4, configuracao 5 bipes");
   }
 }
 
@@ -181,10 +248,14 @@ void lerComando() {
 void setup() {
   Serial.begin(115200);
   dht.begin();
+  pinMode(PINO_BUZZER, OUTPUT);
+  digitalWrite(PINO_BUZZER, BUZZER_LIGA_EM_ALTO ? LOW : HIGH);
   carregarIntervalo();
+  carregarBuzzer();
 
   const ErroConfiguracao erro = validarConfiguracao(SENSORES, QUANTIDADE_SENSORES);
   configuracaoOk = erro == ErroConfiguracao::Nenhum;
+  alarme.atualizar(Falha::Configuracao, !configuracaoOk, millis());
   if (!configuracaoOk) {
     char aviso[96];
     snprintf(aviso, sizeof aviso, "sensores mal configurados em config.h (%s): nada sera coletado", descrever(erro));
@@ -226,5 +297,6 @@ void loop() {
   mqtt.loop();
   lerComando();
   if (agendador.deveColetar(millis())) coletarEPublicar();
+  cuidarAlarme();
   delay(50);
 }

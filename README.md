@@ -39,14 +39,15 @@ pio test -e native              # testes da lógica, sem placa
 Pela serial:
 
 - `intervalo 120` muda a frequência de coleta (10 a 3600 s) e grava na flash
-- `status` mostra MAC, intervalo, Wi-Fi, MQTT e contadores de coleta e falha
+- `status` mostra MAC, intervalo, Wi-Fi, MQTT, buzzer, alarmes ativos e contadores de coleta e falha
+- `buzzer off` / `buzzer on` desliga e religa o som do alarme (grava na flash); `buzzer teste` toca todos os códigos
 
 ## Organização
 
 | Pasta | O quê |
 | --- | --- |
-| `lib/coleta` | lógica sem dependência de hardware: agendamento, validação, payload e status (testada em `test/`) |
-| `src/main.cpp` | sensor, Wi-Fi, NTP, MQTT e serial |
+| `lib/coleta` | lógica sem dependência de hardware: agendamento, validação, payload, status e alarme (testada em `test/`) |
+| `src/main.cpp` | sensor, Wi-Fi, NTP, MQTT, buzzer e serial |
 | `include/` | pinos, identificadores e segredos |
 
 ## Frequência de coleta
@@ -60,3 +61,4 @@ O backend já guarda a frequência por estação (`GET/PUT /api/stations/:id/col
 - Sensor: `sensor <identificador> sem leitura valida`; os demais são enviados. Sem nenhuma leitura, nada é publicado (e há aviso depois de 3 coletas seguidas).
 - Comunicação: Wi-Fi reconecta sozinho; MQTT tenta de novo com espera de 1 s até 60 s, sem travar a coleta.
 - `status` separa falhas de sensor de falhas de comunicação. Estação sem comunicação e ocorrências continuam com o backend, que percebe pelo silêncio da estação.
+- Buzzer: falha de sensor, conexão ou hora que dura 30 min toca um código de bipes (2, 3 e 4), repetido a cada 30 min; `config.h` inválido toca 5 bipes ao ligar. Ligação e detalhes em `docs/hardware.md`.
