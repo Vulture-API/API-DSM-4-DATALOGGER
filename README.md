@@ -13,12 +13,12 @@ Hardware e ligações: [docs/hardware.md](docs/hardware.md).
 Mesmo formato do simulador do INFRA:
 
 ```json
-{"estacao_id":"24:6F:28:AB:CD:EF","unix_time":1794100000,"temp":23.46,"umid":61.00}
+{"estacao_id":"24:6F:28:AB:CD:EF","unix_time":1794100000,"temp":23.46,"umid":61.00,"an32":0.00,"an33":0.00,"an34":1873.00,"an35":0.00,"an36":0.00,"an39":0.00,"pu26":3.00,"pu27":0.00,"di18":1.00,"di19":1.00}
 ```
 
 - `estacao_id` é o MAC do ESP32, que precisa estar cadastrado como estação no backend.
-- `temp` e `umid` são os `local_identifier` dos sensores dessa estação. A lista de sensores fica na tabela `SENSORES` de `include/config.h`: cada linha é um campo do payload.
-- Outros sensores (entrada analógica ou digital) entram por essa tabela, sem mudar a rotina de coleta. O valor enviado é o bruto; o sistema converte com o ganho e o offset do cadastro. Passo a passo em [docs/hardware.md](docs/hardware.md).
+- Cada canal da placa é um campo do payload, sempre enviado com o valor bruto: `temp` e `umid` (DHT22), `an32`…`an39` (analógicos), `pu26` e `pu27` (pulsos), `di18` e `di19` (digitais). Mapa em `include/config.h`.
+- Sensor novo não exige mudar o firmware: liga no canal e cadastra no sistema com o identificador do canal e o ganho/offset da conversão. Canal sem sensor cadastrado é ignorado. Passo a passo em [docs/hardware.md](docs/hardware.md).
 - Leitura que falhou não entra; sem nenhuma leitura válida, nada é publicado.
 - Só publica com o relógio sincronizado por NTP.
 

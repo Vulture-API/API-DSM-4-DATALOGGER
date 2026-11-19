@@ -11,6 +11,7 @@
 #include "leitura.h"
 #include "payload.h"
 #include "pinos.h"
+#include "pulsos.h"
 #include "secrets.h"
 #include "sensores.h"
 #include "status.h"
@@ -31,13 +32,23 @@ char topico[48];
 char clientId[32];
 bool configuracaoOk = false;
 
+// Um contador por sensor de pulsos (índice de SENSORES), alimentado pela interrupção.
+ContadorPulsos contadores[MAXIMO_SENSORES];
+portMUX_TYPE travaPulsos = portMUX_INITIALIZER_UNLOCKED;
+
+void IRAM_ATTR aoReceberPulso(void* arg) {
+  portENTER_CRITICAL_ISR(&travaPulsos);
+  static_cast<ContadorPulsos*>(arg)->registrar(static_cast<uint32_t>(millis()));
+  portEXIT_CRITICAL_ISR(&travaPulsos);
+}
+
 Alarme alarme;
 Bipador bipador;
 bool buzzerLigado = true;
 
 constexpr uint32_t ESPERA_INICIAL_MS = 20000;
 // Cabe a mensagem com MAXIMO_SENSORES campos; o pacote MQTT leva também o tópico.
-constexpr size_t TAMANHO_PAYLOAD = 320;
+constexpr size_t TAMANHO_PAYLOAD = 384;
 constexpr uint16_t TAMANHO_PACOTE_MQTT = 512;
 
 uint32_t tentativasMqtt = 0;
@@ -147,7 +158,7 @@ void manterMqtt() {
   proximaTentativaMs = millis() + atrasoReconexaoMs(tentativasMqtt++);
 }
 
-float lerBruto(const Sensor& sensor) {
+float lerBruto(size_t indice, const Sensor& sensor) {
   switch (sensor.fonte) {
     case Fonte::Dht22Temperatura:
       return dht.readTemperature();
@@ -157,6 +168,8 @@ float lerBruto(const Sensor& sensor) {
       return static_cast<float>(analogRead(sensor.pino));
     case Fonte::Digital:
       return static_cast<float>(digitalRead(sensor.pino));
+    case Fonte::Pulsos:
+      return static_cast<float>(contadores[indice].total());
   }
   return NAN;
 }
@@ -167,7 +180,7 @@ void coletarEPublicar() {
   Medida medidas[MAXIMO_SENSORES];
   char msg[96];
   for (size_t i = 0; i < QUANTIDADE_SENSORES; i++) {
-    medidas[i] = avaliarMedida(SENSORES[i], lerBruto(SENSORES[i]));
+    medidas[i] = avaliarMedida(SENSORES[i], lerBruto(i, SENSORES[i]));
     if (!medidas[i].ok) {
       snprintf(msg, sizeof msg, "sensor %s sem leitura valida", SENSORES[i].identificador);
       escreverLog("WARN", msg);
@@ -198,6 +211,14 @@ void coletarEPublicar() {
     return;
   }
   if (mqtt.publish(topico, payload)) {
+    // Só agora os pulsos publicados saem da contagem; os que chegaram durante
+    // o envio (ou numa coleta que não publicou) continuam pendentes.
+    for (size_t i = 0; i < QUANTIDADE_SENSORES; i++) {
+      if (SENSORES[i].fonte != Fonte::Pulsos || !medidas[i].ok) continue;
+      portENTER_CRITICAL(&travaPulsos);
+      contadores[i].descontar(static_cast<uint32_t>(medidas[i].valor));
+      portEXIT_CRITICAL(&travaPulsos);
+    }
     status.registrar(Evento::Publicada);
     escreverLog("INFO", payload);
   } else {
@@ -258,12 +279,17 @@ void setup() {
   alarme.atualizar(Falha::Configuracao, !configuracaoOk, millis());
   if (!configuracaoOk) {
     char aviso[96];
-    snprintf(aviso, sizeof aviso, "sensores mal configurados em config.h (%s): nada sera coletado", descrever(erro));
+    snprintf(aviso, sizeof aviso, "canais mal configurados em config.h (%s): nada sera coletado", descrever(erro));
     escreverLog("ERRO", aviso);
   }
   for (size_t i = 0; configuracaoOk && i < QUANTIDADE_SENSORES; i++) {
-    if (SENSORES[i].fonte == Fonte::Analogico || SENSORES[i].fonte == Fonte::Digital) {
+    if (SENSORES[i].fonte == Fonte::Analogico) {
       pinMode(SENSORES[i].pino, INPUT);
+    } else if (SENSORES[i].fonte == Fonte::Digital) {
+      pinMode(SENSORES[i].pino, INPUT_PULLUP);
+    } else if (SENSORES[i].fonte == Fonte::Pulsos) {
+      pinMode(SENSORES[i].pino, INPUT_PULLUP);
+      attachInterruptArg(digitalPinToInterrupt(SENSORES[i].pino), aoReceberPulso, &contadores[i], FALLING);
     }
   }
 

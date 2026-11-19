@@ -38,33 +38,37 @@ O pino está em `include/pinos.h`. GPIO4 não interfere no boot do ESP32 (difere
 - Leitura a cada intervalo de coleta (mínimo 10 s; o DHT22 precisa de 2 s entre leituras).
 - `NaN` ou valor fora da faixa do sensor é falha de leitura e não vai para o payload.
 
-## Outros sensores (SCRUM-603)
+## Canais da placa (SCRUM-603, SCRUM-621)
 
-Os sensores da estação ficam na tabela `SENSORES` de `include/config.h`. Cada linha vira um campo do payload, com o valor bruto lido. A conversão para a unidade do parâmetro é feita pelo sistema, com o ganho e o offset cadastrados para o sensor.
+Todos os canais são lidos e enviados em toda coleta, com o valor bruto. Para ligar um sensor novo não é preciso mexer no firmware: basta ligar no canal certo e cadastrar no sistema. Canal sem sensor cadastrado é ignorado pelo tratamento.
 
-| Fonte | Leitura | Valor enviado | Pinos |
-| --- | --- | --- | --- |
-| `Dht22Temperatura` | temperatura do DHT22 | °C, de -40 a 80 | `PINO_DHT` |
-| `Dht22Umidade` | umidade do DHT22 | %, de 0 a 100 | `PINO_DHT` |
-| `Analogico` | tensão no pino, pelo ADC de 12 bits | 0 a 4095 (0 a 3,3 V) | só GPIO 32 a 39 |
-| `Digital` | nível do pino | 0 ou 1 | qualquer GPIO de entrada |
+| Canal | Tipo | Pino | Valor enviado | Para |
+| --- | --- | --- | --- | --- |
+| `temp` | DHT22 | GPIO4 | °C, de -40 a 80 | temperatura do ar |
+| `umid` | DHT22 | GPIO4 | %, de 0 a 100 | umidade do ar |
+| `an32`, `an33`, `an34`, `an35`, `an36`, `an39` | analógico (ADC de 12 bits) | GPIO 32, 33, 34, 35, 36 (VP), 39 (VN) | 0 a 4095 (0 a 3,3 V) | LDR, umidade do solo, biruta, sensores 0–3,3 V |
+| `pu26`, `pu27` | pulsos, por interrupção | GPIO 26, 27 | pulsos desde o último envio | pluviômetro basculante, anemômetro de copo |
+| `di18`, `di19` | digital | GPIO 18, 19 | 0 ou 1 | contato seco, boia, porta |
 
-Para incluir um sensor:
+- Analógico: o sinal não pode passar de 3,3 V (use divisor de tensão). Só o ADC1 lê com o Wi-Fi ligado, por isso os pinos 32 a 39. Canal solto oscila; sem sensor cadastrado, é ignorado.
+- Pulsos e digital: ligue o contato entre o pino e o GND; o firmware ativa o pull-up interno, sem resistor. No digital, contato fechado = 0.
+- Pulsos a menos de 50 ms um do outro contam como um (quique do reed). Os pulsos só saem da contagem depois de publicados: com o Wi-Fi ou o MQTT fora do ar, o acumulado vai no próximo envio.
 
-1. Ligue o sensor. Sinal analógico só nos GPIO 32 a 39: os outros pinos analógicos do ESP32 não leem com o Wi-Fi ligado. O sinal não pode passar de 3,3 V.
-2. Acrescente uma linha em `SENSORES` com identificador, fonte e pino, e grave o firmware.
-3. No sistema, cadastre o tipo (se ainda não existir) e o sensor na estação, com o **mesmo identificador**.
-4. Informe o ganho e o offset do sensor para converter o valor bruto.
+### Cadastro no sistema
 
-Exemplo, sensor de luminosidade (LDR em divisor de tensão no GPIO34):
+1. Cadastre o tipo do sensor (se ainda não existir), com a unidade.
+2. Cadastre o sensor na estação com o **identificador do canal** e o ganho/offset que convertem o bruto: `valor = bruto × fator × ganho + offset`.
 
-```cpp
-{"lux", coleta::Fonte::Analogico, 34},
-```
+| Sensor | Canal | Ganho | Offset | Resultado |
+| --- | --- | --- | --- | --- |
+| Pluviômetro basculante de 0,2 mm | `pu26` | `0.2` | `0` | mm de chuva no intervalo |
+| LDR em divisor de tensão | `an34` | `0.000805860805` (3,3 / 4095) | `0` | volts |
+| Sensor 0–3,3 V linear (ex.: 0–100 %) | `an35` | `0.0244200244` (100 / 4095) | `0` | % |
+| Boia de nível | `di18` | — | — | 0 = cheio, 1 = vazio |
 
-No cadastro, um ganho de `0,000805860805` (3,3 / 4095) grava a leitura em volts; o ganho e o offset do fabricante convertem para lux.
+No anemômetro, os pulsos são do intervalo de coleta: o ganho é a velocidade por pulso dividida pelo intervalo em segundos.
 
-Limites: até 8 sensores por estação; identificadores sem repetição, só com letras, números, `_` e `-`. Configuração inválida aparece na serial ao ligar e a estação não coleta. Sensor que falha fica fora da mensagem e os demais são enviados.
+Configuração inválida de `include/config.h` (identificador repetido ou reservado, pino errado para o tipo, pino usado por dois canais) aparece na serial ao ligar, toca o alarme de configuração e a estação não coleta. Falha do DHT22 tira só `temp` e `umid` da mensagem.
 
 ## Buzzer (SCRUM-619)
 
