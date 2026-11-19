@@ -12,7 +12,7 @@ enum class Fonte {
   Dht22Umidade,      // %
   Analogico,         // ADC de 12 bits: 0 a 4095
   Digital,           // 0 ou 1 (pull-up interno: contato aberto = 1)
-  Pulsos,            // pulsos contados desde o último envio (pluviômetro basculante)
+  Pulsos,            // pulsos contados desde o último envio (pluviômetro, anemômetro)
 };
 
 struct Sensor {
@@ -27,7 +27,7 @@ struct Medida {
   bool ok;
 };
 
-constexpr size_t MAXIMO_SENSORES = 12;
+constexpr size_t MAXIMO_SENSORES = 26;
 
 // Só letras, números, "_" e "-": o identificador vai entre aspas no JSON.
 bool identificadorValido(const char* identificador);
@@ -36,10 +36,14 @@ bool identificadorValido(const char* identificador);
 // pinos do ADC1 (GPIO 32 a 39).
 bool pinoAnalogicoValido(int pino);
 
-// Entrada digital e de pulsos usa o pull-up interno: GPIO 0 a 5, 12 a 27, 32
-// e 33. Ficam fora os da flash (6 a 11) e os GPIO 34 a 39, que só são entrada
-// e não têm pull-up.
+// Entrada digital usa o pull-up interno: GPIO 0 a 5, 12 a 27, 32 e 33. Ficam
+// fora os da flash (6 a 11) e os GPIO 34 a 39, que só são entrada e não têm
+// pull-up.
 bool pinoComPullUpValido(int pino);
+
+// Pulsos são contados por amostragem: qualquer pino de entrada serve, inclusive
+// os GPIO 34 a 39 (com o resistor de pull-up da placa).
+bool pinoPulsosValido(int pino);
 
 // Quantidade de pulsos acima disso numa coleta é falha (sensor travado).
 constexpr float PULSOS_MAX = 100000.0f;

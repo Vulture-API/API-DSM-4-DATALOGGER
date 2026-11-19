@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "alarme.h"
+#include "canais.h"
 #include "config.h"
 #include "intervalo.h"
 #include "leitura.h"
@@ -20,7 +21,6 @@ using namespace coleta;
 
 namespace {
 
-DHT dht(PINO_DHT, DHT22);
 WiFiClient rede;
 PubSubClient mqtt(rede);
 Preferences preferencias;
@@ -32,14 +32,43 @@ char topico[48];
 char clientId[32];
 bool configuracaoOk = false;
 
-// Um contador por sensor de pulsos (índice de SENSORES), alimentado pela interrupção.
-ContadorPulsos contadores[MAXIMO_SENSORES];
-portMUX_TYPE travaPulsos = portMUX_INITIALIZER_UNLOCKED;
+// Canais da estação, remontados quando o DHT22 aparece ou some (SCRUM-621).
+Sensor canais[MAXIMO_SENSORES];
+char nomesCanais[MAXIMO_SENSORES][TAMANHO_NOME_CANAL];
+size_t quantidadeCanais = 0;
 
-void IRAM_ATTR aoReceberPulso(void* arg) {
-  portENTER_CRITICAL_ISR(&travaPulsos);
-  static_cast<ContadorPulsos*>(arg)->registrar(static_cast<uint32_t>(millis()));
-  portEXIT_CRITICAL_ISR(&travaPulsos);
+DHT* dht = nullptr;
+volatile int pinoDht = -1;
+uint8_t falhasDht = 0;
+uint32_t coletasSemDht = 0;
+
+// Estado por GPIO, atualizado pela tarefa de amostragem.
+CanalPulsos pulsos[40];
+volatile uint16_t ultimoAnalogico[40];
+portMUX_TYPE travaPulsos = portMUX_INITIALIZER_UNLOCKED;
+volatile bool amostragemPausada = false;
+
+void registrarAmostra(int pino, bool alto) {
+  portENTER_CRITICAL(&travaPulsos);
+  pulsos[pino].amostrar(alto);
+  portEXIT_CRITICAL(&travaPulsos);
+}
+
+void amostrar(void*) {
+  TickType_t proxima = xTaskGetTickCount();
+  for (;;) {
+    if (!amostragemPausada) {
+      for (int pino : PINOS_ANALOGICOS) {
+        const int valor = analogRead(pino);
+        ultimoAnalogico[pino] = static_cast<uint16_t>(valor);
+        registrarAmostra(pino, nivelAnalogico(valor, pulsos[pino].alto));
+      }
+      for (int pino : PINOS_DIGITAIS) {
+        if (pino != pinoDht) registrarAmostra(pino, digitalRead(pino) == HIGH);
+      }
+    }
+    vTaskDelayUntil(&proxima, pdMS_TO_TICKS(PERIODO_AMOSTRAGEM_MS));
+  }
 }
 
 Alarme alarme;
@@ -48,8 +77,8 @@ bool buzzerLigado = true;
 
 constexpr uint32_t ESPERA_INICIAL_MS = 20000;
 // Cabe a mensagem com MAXIMO_SENSORES campos; o pacote MQTT leva também o tópico.
-constexpr size_t TAMANHO_PAYLOAD = 384;
-constexpr uint16_t TAMANHO_PACOTE_MQTT = 512;
+constexpr size_t TAMANHO_PAYLOAD = 640;
+constexpr uint16_t TAMANHO_PACOTE_MQTT = 768;
 
 uint32_t tentativasMqtt = 0;
 uint32_t proximaTentativaMs = 0;
@@ -116,6 +145,61 @@ void cuidarAlarme() {
   digitalWrite(PINO_BUZZER, ligar == BUZZER_LIGA_EM_ALTO ? HIGH : LOW);
 }
 
+void montarListaCanais() {
+  quantidadeCanais = montarCanais(pinoDht, PINOS_ANALOGICOS, QUANTIDADE_ANALOGICOS, PINOS_DIGITAIS,
+                                  QUANTIDADE_DIGITAIS, canais, nomesCanais, MAXIMO_SENSORES);
+  const ErroConfiguracao erro = validarConfiguracao(canais, quantidadeCanais);
+  configuracaoOk = erro == ErroConfiguracao::Nenhum;
+  alarme.atualizar(Falha::Configuracao, !configuracaoOk, millis());
+  if (!configuracaoOk) {
+    char aviso[96];
+    snprintf(aviso, sizeof aviso, "canais mal configurados em config.h (%s): nada sera coletado", descrever(erro));
+    escreverLog("ERRO", aviso);
+  }
+}
+
+bool respondeComoDht(int pino) {
+  DHT teste(pino, DHT22);
+  teste.begin();
+  return !isnan(teste.readTemperature(false, true));
+}
+
+// Procura o DHT22 nos pinos digitais, começando pelo último em que foi achado.
+void detectarDht() {
+  amostragemPausada = true;
+  delay(PERIODO_AMOSTRAGEM_MS * 2);
+  preferencias.begin("datalogger", true);
+  const int salvo = preferencias.getInt("dht_pino", PINO_DHT);
+  preferencias.end();
+  int achado = respondeComoDht(salvo) ? salvo : -1;
+  for (size_t i = 0; achado < 0 && i < QUANTIDADE_DIGITAIS; i++) {
+    if (PINOS_DIGITAIS[i] != salvo && respondeComoDht(PINOS_DIGITAIS[i])) achado = PINOS_DIGITAIS[i];
+  }
+  for (int pino : PINOS_DIGITAIS) pinMode(pino, INPUT_PULLUP);
+
+  if (achado != pinoDht) {
+    delete dht;
+    dht = achado >= 0 ? new DHT(achado, DHT22) : nullptr;
+    if (dht) dht->begin();
+    if (pinoDht >= 0) pulsos[pinoDht] = CanalPulsos{};
+    pinoDht = achado;
+    if (achado >= 0) {
+      preferencias.begin("datalogger", false);
+      preferencias.putInt("dht_pino", achado);
+      preferencias.end();
+    }
+    montarListaCanais();
+    char msg[64];
+    if (achado >= 0) {
+      snprintf(msg, sizeof msg, "DHT22 no GPIO%d", achado);
+    } else {
+      snprintf(msg, sizeof msg, "DHT22 nao encontrado");
+    }
+    escreverLog(achado >= 0 ? "INFO" : "WARN", msg);
+  }
+  amostragemPausada = false;
+}
+
 bool salvarIntervalo(uint32_t segundos) {
   if (!agendador.configurar(segundos)) return false;
   preferencias.begin("datalogger", false);
@@ -158,48 +242,61 @@ void manterMqtt() {
   proximaTentativaMs = millis() + atrasoReconexaoMs(tentativasMqtt++);
 }
 
-float lerBruto(size_t indice, const Sensor& sensor) {
+float lerBruto(const Sensor& sensor) {
   switch (sensor.fonte) {
     case Fonte::Dht22Temperatura:
-      return dht.readTemperature();
+      return dht ? dht->readTemperature() : NAN;
     case Fonte::Dht22Umidade:
-      return dht.readHumidity();
+      return dht ? dht->readHumidity() : NAN;
     case Fonte::Analogico:
-      return static_cast<float>(analogRead(sensor.pino));
+      return static_cast<float>(ultimoAnalogico[sensor.pino]);
     case Fonte::Digital:
       return static_cast<float>(digitalRead(sensor.pino));
-    case Fonte::Pulsos:
-      return static_cast<float>(contadores[indice].total());
+    case Fonte::Pulsos: {
+      portENTER_CRITICAL(&travaPulsos);
+      const uint32_t total = pulsos[sensor.pino].total();
+      portEXIT_CRITICAL(&travaPulsos);
+      return static_cast<float>(total);
+    }
   }
   return NAN;
 }
 
 void coletarEPublicar() {
+  // DHT22 sumido por 3 coletas, ou ausente há 10: procura de novo.
+  if (pinoDht < 0 ? (++coletasSemDht % 10 == 0) : falhasDht >= 3) {
+    falhasDht = 0;
+    detectarDht();
+  }
   if (!configuracaoOk) return;
 
   Medida medidas[MAXIMO_SENSORES];
   char msg[96];
-  for (size_t i = 0; i < QUANTIDADE_SENSORES; i++) {
-    medidas[i] = avaliarMedida(SENSORES[i], lerBruto(i, SENSORES[i]));
+  bool dhtRespondeu = false;
+  for (size_t i = 0; i < quantidadeCanais; i++) {
+    medidas[i] = avaliarMedida(canais[i], lerBruto(canais[i]));
+    const bool doDht = canais[i].fonte == Fonte::Dht22Temperatura || canais[i].fonte == Fonte::Dht22Umidade;
+    if (doDht && medidas[i].ok) dhtRespondeu = true;
     if (!medidas[i].ok) {
-      snprintf(msg, sizeof msg, "sensor %s sem leitura valida", SENSORES[i].identificador);
+      snprintf(msg, sizeof msg, "sensor %s sem leitura valida", canais[i].identificador);
       escreverLog("WARN", msg);
     }
   }
+  if (pinoDht >= 0) falhasDht = dhtRespondeu ? 0 : falhasDht + 1;
 
-  const size_t validas = contarValidas(medidas, QUANTIDADE_SENSORES);
-  alarme.atualizar(Falha::Sensor, validas < QUANTIDADE_SENSORES, millis());
+  const size_t validas = contarValidas(medidas, quantidadeCanais);
+  alarme.atualizar(Falha::Sensor, validas < quantidadeCanais, millis());
   if (validas == 0) {
     status.registrar(Evento::FalhaSensor);
     escreverLog("ERRO", status.sensorComProblema() ? "nenhum sensor com leitura ha 3 coletas"
                                                    : "nenhum sensor com leitura");
     return;
   }
-  status.registrar(validas == QUANTIDADE_SENSORES ? Evento::ColetaCompleta : Evento::ColetaParcial);
+  status.registrar(validas == quantidadeCanais ? Evento::ColetaCompleta : Evento::ColetaParcial);
 
   char payload[TAMANHO_PAYLOAD];
   const Rejeicao motivo = montarPayload(mac, static_cast<uint32_t>(time(nullptr)), medidas,
-                                        QUANTIDADE_SENSORES, payload, sizeof payload);
+                                        quantidadeCanais, payload, sizeof payload);
   if (motivo != Rejeicao::Nenhuma) {
     status.registrar(Evento::PayloadRejeitado);
     escreverLog("WARN", descrever(motivo));
@@ -213,10 +310,10 @@ void coletarEPublicar() {
   if (mqtt.publish(topico, payload)) {
     // Só agora os pulsos publicados saem da contagem; os que chegaram durante
     // o envio (ou numa coleta que não publicou) continuam pendentes.
-    for (size_t i = 0; i < QUANTIDADE_SENSORES; i++) {
-      if (SENSORES[i].fonte != Fonte::Pulsos || !medidas[i].ok) continue;
+    for (size_t i = 0; i < quantidadeCanais; i++) {
+      if (canais[i].fonte != Fonte::Pulsos || !medidas[i].ok) continue;
       portENTER_CRITICAL(&travaPulsos);
-      contadores[i].descontar(static_cast<uint32_t>(medidas[i].valor));
+      pulsos[canais[i].pino].descontar(static_cast<uint32_t>(medidas[i].valor));
       portEXIT_CRITICAL(&travaPulsos);
     }
     status.registrar(Evento::Publicada);
@@ -227,7 +324,26 @@ void coletarEPublicar() {
   }
 }
 
-// Comandos pela serial: "intervalo <segundos>", "status" e "buzzer on|off|teste".
+// Valor atual de cada canal, para achar onde o sensor foi ligado.
+void mostrarCanais() {
+  char linha[96];
+  size_t usado = 0;
+  for (size_t i = 0; i < quantidadeCanais; i++) {
+    const float valor = lerBruto(canais[i]);
+    const int n = snprintf(linha + usado, sizeof linha - usado, "%s%s=%.1f", usado ? " " : "", canais[i].identificador,
+                           valor);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof linha - usado) {
+      escreverLog("INFO", linha);
+      usado = 0;
+      i--;
+      continue;
+    }
+    usado += static_cast<size_t>(n);
+  }
+  if (usado) escreverLog("INFO", linha);
+}
+
+// Comandos pela serial: "intervalo <segundos>", "status", "canais" e "buzzer on|off|teste".
 void lerComando() {
   if (!Serial.available()) return;
   String linha = Serial.readStringUntil('\n');
@@ -248,11 +364,19 @@ void lerComando() {
     status.resumo(resumo, sizeof resumo);
     char alarmes[48];
     listarFalhas(alarme.confirmadas(millis()), alarmes, sizeof alarmes);
-    snprintf(msg, sizeof msg, "estacao=%s sensores=%u intervalo=%lus wifi=%s mqtt=%s buzzer=%s alarmes=%s %s", mac,
-             static_cast<unsigned>(QUANTIDADE_SENSORES), static_cast<unsigned long>(agendador.intervaloS()),
+    char dhtTexto[12];
+    if (pinoDht >= 0) {
+      snprintf(dhtTexto, sizeof dhtTexto, "GPIO%d", static_cast<int>(pinoDht));
+    } else {
+      snprintf(dhtTexto, sizeof dhtTexto, "nenhum");
+    }
+    snprintf(msg, sizeof msg, "estacao=%s canais=%u dht=%s intervalo=%lus wifi=%s mqtt=%s buzzer=%s alarmes=%s %s", mac,
+             static_cast<unsigned>(quantidadeCanais), dhtTexto, static_cast<unsigned long>(agendador.intervaloS()),
              WiFi.status() == WL_CONNECTED ? "ok" : "off", mqtt.connected() ? "ok" : "off",
              buzzerLigado ? "on" : "off", alarmes, resumo);
     escreverLog("INFO", msg);
+  } else if (linha == "canais") {
+    mostrarCanais();
   } else if (linha == "buzzer on" || linha == "buzzer off") {
     salvarBuzzer(linha == "buzzer on");
     escreverLog("INFO", buzzerLigado ? "buzzer ligado" : "buzzer desligado");
@@ -268,30 +392,13 @@ void lerComando() {
 
 void setup() {
   Serial.begin(115200);
-  dht.begin();
   pinMode(PINO_BUZZER, OUTPUT);
   digitalWrite(PINO_BUZZER, BUZZER_LIGA_EM_ALTO ? LOW : HIGH);
   carregarIntervalo();
   carregarBuzzer();
 
-  const ErroConfiguracao erro = validarConfiguracao(SENSORES, QUANTIDADE_SENSORES);
-  configuracaoOk = erro == ErroConfiguracao::Nenhum;
-  alarme.atualizar(Falha::Configuracao, !configuracaoOk, millis());
-  if (!configuracaoOk) {
-    char aviso[96];
-    snprintf(aviso, sizeof aviso, "canais mal configurados em config.h (%s): nada sera coletado", descrever(erro));
-    escreverLog("ERRO", aviso);
-  }
-  for (size_t i = 0; configuracaoOk && i < QUANTIDADE_SENSORES; i++) {
-    if (SENSORES[i].fonte == Fonte::Analogico) {
-      pinMode(SENSORES[i].pino, INPUT);
-    } else if (SENSORES[i].fonte == Fonte::Digital) {
-      pinMode(SENSORES[i].pino, INPUT_PULLUP);
-    } else if (SENSORES[i].fonte == Fonte::Pulsos) {
-      pinMode(SENSORES[i].pino, INPUT_PULLUP);
-      attachInterruptArg(digitalPinToInterrupt(SENSORES[i].pino), aoReceberPulso, &contadores[i], FALLING);
-    }
-  }
+  for (int pino : PINOS_DIGITAIS) pinMode(pino, INPUT_PULLUP);
+  montarListaCanais();
 
   conectarWifi();
   strncpy(mac, WiFi.macAddress().c_str(), sizeof mac - 1);
@@ -303,8 +410,8 @@ void setup() {
   mqtt.setBufferSize(TAMANHO_PACOTE_MQTT);
 
   char msg[128];
-  snprintf(msg, sizeof msg, "estacao %s, topico %s, intervalo %lus, %u sensores", mac, topico,
-           static_cast<unsigned long>(agendador.intervaloS()), static_cast<unsigned>(QUANTIDADE_SENSORES));
+  snprintf(msg, sizeof msg, "estacao %s, topico %s, intervalo %lus", mac, topico,
+           static_cast<unsigned long>(agendador.intervaloS()));
   escreverLog("INFO", msg);
 
   // A primeira coleta sai logo no início do loop. Espera um pouco por Wi-Fi e
@@ -316,6 +423,13 @@ void setup() {
     delay(200);
   }
   if (WiFi.status() != WL_CONNECTED) escreverLog("WARN", "Wi-Fi ainda nao conectou; seguindo e tentando em segundo plano");
+
+  detectarDht();
+  if (pinoDht < 0) escreverLog("WARN", "DHT22 nao encontrado");
+  xTaskCreatePinnedToCore(amostrar, "amostragem", 3072, nullptr, 1, nullptr, 1);
+  snprintf(msg, sizeof msg, "%u canais; comando \"canais\" mostra o valor de cada um",
+           static_cast<unsigned>(quantidadeCanais));
+  escreverLog("INFO", msg);
 }
 
 void loop() {

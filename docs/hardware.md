@@ -40,35 +40,34 @@ O pino está em `include/pinos.h`. GPIO4 não interfere no boot do ESP32 (difere
 
 ## Canais da placa (SCRUM-603, SCRUM-621)
 
-Todos os canais são lidos e enviados em toda coleta, com o valor bruto. Para ligar um sensor novo não é preciso mexer no firmware: basta ligar no canal certo e cadastrar no sistema. Canal sem sensor cadastrado é ignorado pelo tratamento.
+O firmware lê todos os pinos livres em toda coleta e envia o valor bruto de cada um. Para ligar um sensor novo não é preciso mexer no firmware nem saber o GPIO do conector: ligue onde quiser, veja qual canal mudou e cadastre o sensor no sistema com esse identificador. Canal sem sensor cadastrado é ignorado pelo tratamento.
 
-| Canal | Tipo | Pino | Valor enviado | Para |
+| Canal | O que é | Pinos | Valor enviado |
+| --- | --- | --- | --- |
+| `temp`, `umid` | DHT22, procurado sozinho nos pinos digitais | o primeiro que responder (começa pelo GPIO4) | °C e % |
+| `anNN` | tensão no pino (ADC de 12 bits) | 32, 33, 34, 35, 36, 39 | 0 a 4095 (0 a 3,3 V) |
+| `puNN` | pulsos (contato fechando) desde o último envio | 32, 33, 34, 35, 36, 39 e 4, 13, 14, 16, 17, 18, 19, 21, 22, 23, 26, 27 | inteiro |
+
+- Os pulsos são contados por amostragem a cada 5 ms, então qualquer um desses pinos serve, inclusive 34 a 39. Nível que não se repete em duas amostras seguidas (quique do reed) não conta.
+- Nos pinos digitais o firmware liga o pull-up interno. Os GPIO 34 a 39 não têm pull-up: ali o contato seco precisa do resistor da placa (os conectores do pluviômetro e do anemômetro da placa da Fatec já têm).
+- Pino analógico também conta pulsos: abaixo de 1/3 da escala é contato fechado, acima de 2/3 é aberto.
+- Os pulsos só saem da contagem depois de publicados: com o Wi-Fi ou o MQTT fora do ar, o acumulado vai no próximo envio.
+- O DHT22 é procurado ao ligar, a cada 10 coletas sem ele e depois de 3 coletas sem resposta. O pino achado fica gravado e sai da lista de pulsos.
+
+### Achar o canal do sensor
+
+1. Ligue o sensor e grave/reinicie a placa.
+2. Na serial, mande `canais`: aparece o valor de cada canal. Mexa no sensor (vire a gangorra do pluviômetro, gire o anemômetro) e mande `canais` de novo: o canal que mudou é o do sensor. O mesmo aparece no payload de cada envio.
+3. No sistema, cadastre o sensor na estação com esse identificador e a calibração: `valor = bruto × fator × ganho + offset`.
+
+| Sensor | Ligação | Canal | Ganho | Resultado |
 | --- | --- | --- | --- | --- |
-| `temp` | DHT22 | GPIO4 | °C, de -40 a 80 | temperatura do ar |
-| `umid` | DHT22 | GPIO4 | %, de 0 a 100 | umidade do ar |
-| `an32`, `an33`, `an34`, `an35`, `an36`, `an39` | analógico (ADC de 12 bits) | GPIO 32, 33, 34, 35, 36 (VP), 39 (VN) | 0 a 4095 (0 a 3,3 V) | LDR, umidade do solo, biruta, sensores 0–3,3 V |
-| `pu26`, `pu27` | pulsos, por interrupção | GPIO 26, 27 | pulsos desde o último envio | pluviômetro basculante, anemômetro de copo |
-| `di18`, `di19` | digital | GPIO 18, 19 | 0 ou 1 | contato seco, boia, porta |
+| Pluviômetro basculante de 0,2 mm (2 fios) | GND e sinal (na placa da Fatec: GND e `Pluviometro` do conector J11; nunca 3V3 + GND) | o `puNN` que contar | `0.2` | mm de chuva no intervalo |
+| Anemômetro de copo | GND e sinal | o `puNN` que contar | velocidade por pulso ÷ intervalo em s | velocidade média |
+| LDR em divisor de tensão | sinal no pino analógico | o `anNN` que mudar | `0.000805860805` (3,3 / 4095) | volts |
+| Sensor 0–3,3 V linear (ex.: 0–100 %) | sinal no pino analógico | o `anNN` | `0.0244200244` (100 / 4095) | % |
 
-- Analógico: o sinal não pode passar de 3,3 V (use divisor de tensão). Só o ADC1 lê com o Wi-Fi ligado, por isso os pinos 32 a 39. Canal solto oscila; sem sensor cadastrado, é ignorado.
-- Pulsos e digital: ligue o contato entre o pino e o GND; o firmware ativa o pull-up interno, sem resistor. No digital, contato fechado = 0.
-- Pulsos a menos de 50 ms um do outro contam como um (quique do reed). Os pulsos só saem da contagem depois de publicados: com o Wi-Fi ou o MQTT fora do ar, o acumulado vai no próximo envio.
-
-### Cadastro no sistema
-
-1. Cadastre o tipo do sensor (se ainda não existir), com a unidade.
-2. Cadastre o sensor na estação com o **identificador do canal** e o ganho/offset que convertem o bruto: `valor = bruto × fator × ganho + offset`.
-
-| Sensor | Canal | Ganho | Offset | Resultado |
-| --- | --- | --- | --- | --- |
-| Pluviômetro basculante de 0,2 mm | `pu26` | `0.2` | `0` | mm de chuva no intervalo |
-| LDR em divisor de tensão | `an34` | `0.000805860805` (3,3 / 4095) | `0` | volts |
-| Sensor 0–3,3 V linear (ex.: 0–100 %) | `an35` | `0.0244200244` (100 / 4095) | `0` | % |
-| Boia de nível | `di18` | — | — | 0 = cheio, 1 = vazio |
-
-No anemômetro, os pulsos são do intervalo de coleta: o ganho é a velocidade por pulso dividida pelo intervalo em segundos.
-
-Configuração inválida de `include/config.h` (identificador repetido ou reservado, pino errado para o tipo, pino usado por dois canais) aparece na serial ao ligar, toca o alarme de configuração e a estação não coleta. Falha do DHT22 tira só `temp` e `umid` da mensagem.
+Pinos que o firmware não lê: 0, 2, 5, 12 e 15 (boot), 1 e 3 (serial), 6 a 11 (flash) e 25 (buzzer).
 
 ## Buzzer (SCRUM-619)
 

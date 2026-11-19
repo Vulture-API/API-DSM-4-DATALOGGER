@@ -2,32 +2,50 @@
 
 #include <cstdint>
 
-#if defined(__GNUC__)
-#define COLETA_NO_ISR inline __attribute__((always_inline))
-#else
-#define COLETA_NO_ISR inline
-#endif
-
 namespace coleta {
 
-// Contador de pulsos de sensor basculante (pluviômetro com reed switch).
-// registrar() roda dentro da interrupção: sem chamadas, sem alocação.
-// Os pulsos só saem da contagem depois que a leitura foi publicada
-// (descontar), então uma queda do MQTT não perde chuva: o que ficou
-// pendente vai junto no próximo envio.
-struct ContadorPulsos {
-  // O reed quica ao fechar; pulsos mais próximos que isso contam como um só.
-  static constexpr uint32_t DEBOUNCE_MS = 50;
+// Contagem de pulsos por amostragem do nível do pino (SCRUM-621). Uma tarefa
+// lê todos os canais a cada PERIODO_AMOSTRAGEM_MS, então qualquer pino serve,
+// inclusive os GPIO 34 a 39, que não têm pull-up interno nem interrupção
+// confiável sem resistor na placa.
+constexpr uint32_t PERIODO_AMOSTRAGEM_MS = 5;
 
-  volatile uint32_t pendentes = 0;
-  volatile uint32_t ultimoMs = 0;
-  volatile bool tem_ultimo = false;
+// Entrada analógica lida como pulso: histerese entre 1/3 e 2/3 da escala.
+constexpr int LIMIAR_BAIXO = 1365;
+constexpr int LIMIAR_ALTO = 2730;
 
-  COLETA_NO_ISR bool registrar(uint32_t agoraMs) {
-    if (tem_ultimo && static_cast<uint32_t>(agoraMs - ultimoMs) < DEBOUNCE_MS) return false;
-    tem_ultimo = true;
-    ultimoMs = agoraMs;
-    pendentes = pendentes + 1;
+inline bool nivelAnalogico(int valor, bool anterior) {
+  if (valor <= LIMIAR_BAIXO) return false;
+  if (valor >= LIMIAR_ALTO) return true;
+  return anterior;
+}
+
+struct CanalPulsos {
+  // O nível só muda depois de repetir em amostras seguidas: o quique do reed
+  // (poucos ms) não vira pulso.
+  static constexpr uint8_t AMOSTRAS_ESTAVEIS = 2;
+
+  bool iniciado = false;
+  bool alto = true;
+  uint8_t contrarias = 0;
+  uint32_t pendentes = 0;
+
+  // Conta a borda de descida confirmada (contato fechando).
+  bool amostrar(bool nivelAlto) {
+    if (!iniciado) {
+      iniciado = true;
+      alto = nivelAlto;
+      return false;
+    }
+    if (nivelAlto == alto) {
+      contrarias = 0;
+      return false;
+    }
+    if (++contrarias < AMOSTRAS_ESTAVEIS) return false;
+    alto = nivelAlto;
+    contrarias = 0;
+    if (alto) return false;
+    pendentes++;
     return true;
   }
 
