@@ -476,33 +476,67 @@ void test_cada_falha_tem_um_codigo_de_bipes() {
   TEST_ASSERT_EQUAL_UINT8(5, bipesDe(Falha::Configuracao));
 }
 
+namespace {
+// Conta os toques do bipador: os bipes do código (nota própria) e o resto.
+struct Contagem {
+  int notas = 0;
+  int bipes = 0;
+};
+
+Contagem contar(const Bipador& bipador, uint32_t inicio = 0) {
+  Contagem c;
+  uint16_t anterior = 0;
+  for (uint32_t t = inicio; t <= inicio + bipador.duracaoMs(); t++) {
+    const uint16_t f = bipador.frequencia(t);
+    if (f != 0 && anterior == 0) (f == Bipador::NOTA_CODIGO_HZ ? c.bipes : c.notas)++;
+    anterior = f;
+  }
+  return c;
+}
+}  // namespace
+
 void test_bipador_toca_o_codigo_sem_bloquear() {
   Bipador bipador;
   Aviso aviso;
   aviso.falhas = mascaraDe(Falha::Sensor);
   bipador.tocar(aviso, 1000);
   TEST_ASSERT_TRUE(bipador.ligado(1000));
-  TEST_ASSERT_TRUE(bipador.ligado(1000 + Bipador::BIPE_MS - 1));
-  TEST_ASSERT_FALSE(bipador.ligado(1000 + Bipador::BIPE_MS));
-  TEST_ASSERT_TRUE(bipador.ligado(1000 + Bipador::BIPE_MS + Bipador::PAUSA_BIPE_MS));
-  const uint32_t fimDoSegundo = 1000 + 2 * Bipador::BIPE_MS + Bipador::PAUSA_BIPE_MS;
-  TEST_ASSERT_FALSE(bipador.ligado(fimDoSegundo));
-  TEST_ASSERT_TRUE(bipador.tocando(fimDoSegundo));
-  TEST_ASSERT_FALSE(bipador.tocando(fimDoSegundo + Bipador::PAUSA_GRUPO_MS));
+  TEST_ASSERT_TRUE(bipador.frequencia(1000) != Bipador::NOTA_CODIGO_HZ);  // começa pela chamada
+  const Contagem c = contar(bipador, 1000);
+  TEST_ASSERT_EQUAL_INT(2, c.bipes);
+  TEST_ASSERT_TRUE(c.notas > 0);
+  const uint32_t fim = 1000 + bipador.duracaoMs();
+  TEST_ASSERT_TRUE(bipador.tocando(fim - 1));
+  TEST_ASSERT_FALSE(bipador.tocando(fim));
+  TEST_ASSERT_FALSE(bipador.ligado(fim));
+  TEST_ASSERT_FALSE(bipador.ligado(fim - Bipador::PAUSA_GRUPO_MS));  // pausa depois do código
 }
 
-void test_bipador_normalizou_e_um_bipe_longo() {
+void test_bipador_normalizou_sem_bipes_de_codigo() {
   Bipador bipador;
   Aviso aviso;
   aviso.normalizou = true;
   bipador.tocar(aviso, 0);
-  TEST_ASSERT_TRUE(bipador.ligado(Bipador::BIPE_NORMALIZOU_MS - 1));
-  TEST_ASSERT_FALSE(bipador.ligado(Bipador::BIPE_NORMALIZOU_MS));
+  const Contagem c = contar(bipador);
+  TEST_ASSERT_EQUAL_INT(0, c.bipes);
+  TEST_ASSERT_EQUAL_INT(1, c.notas);
+  TEST_ASSERT_FALSE(bipador.tocando(bipador.duracaoMs()));
+}
+
+void test_bipador_abertura_e_curta() {
+  Bipador bipador;
+  bipador.tocarAbertura(500);
+  const Contagem c = contar(bipador, 500);
+  TEST_ASSERT_EQUAL_INT(0, c.bipes);
+  TEST_ASSERT_EQUAL_INT(4, c.notas);
+  TEST_ASSERT_TRUE(bipador.duracaoMs() < 1000);
+  TEST_ASSERT_FALSE(bipador.tocando(500 + bipador.duracaoMs()));
 }
 
 void test_bipador_parado_fica_desligado() {
   Bipador bipador;
   TEST_ASSERT_FALSE(bipador.ligado(0));
+  TEST_ASSERT_EQUAL_UINT16(0, bipador.frequencia(0));
   TEST_ASSERT_FALSE(bipador.tocando(12345));
 }
 
@@ -511,14 +545,9 @@ void test_bipador_com_todas_as_falhas_toca_os_14_bipes() {
   Aviso aviso;
   for (size_t i = 0; i < QUANTIDADE_FALHAS; i++) aviso.falhas |= mascaraDe(static_cast<Falha>(i));
   bipador.tocar(aviso, 0);
-  int bipes = 0;
-  bool anterior = false;
-  for (uint32_t t = 0; t < bipador.duracaoMs(); t += 10) {
-    const bool agora = bipador.ligado(t);
-    if (agora && !anterior) bipes++;
-    anterior = agora;
-  }
-  TEST_ASSERT_EQUAL_INT(14, bipes);
+  const Contagem c = contar(bipador);
+  TEST_ASSERT_EQUAL_INT(14, c.bipes);
+  TEST_ASSERT_EQUAL_INT(QUANTIDADE_FALHAS, c.notas);  // uma sirene (som contínuo) por falha
 }
 
 // SCRUM-621: todos os pinos lidos, pulsos por amostragem
@@ -587,7 +616,7 @@ void test_canais_da_placa_com_dht22_no_gpio4() {
   TEST_ASSERT_EQUAL(4, canais[0].pino);
   TEST_ASSERT_TRUE(procurar(n, "an34") >= 0);
   TEST_ASSERT_TRUE(procurar(n, "pu34") >= 0);
-  TEST_ASSERT_TRUE(procurar(n, "pu26") >= 0);
+  TEST_ASSERT_TRUE(procurar(n, "pu27") >= 0);
   TEST_ASSERT_EQUAL(-1, procurar(n, "pu4"));
   TEST_ASSERT_EQUAL(-1, procurar(n, "an26"));
   TEST_ASSERT_EQUAL(-1, procurar(n, "an32"));
@@ -857,7 +886,8 @@ int main() {
   RUN_TEST(test_alarme_continua_certo_quando_millis_da_a_volta);
   RUN_TEST(test_cada_falha_tem_um_codigo_de_bipes);
   RUN_TEST(test_bipador_toca_o_codigo_sem_bloquear);
-  RUN_TEST(test_bipador_normalizou_e_um_bipe_longo);
+  RUN_TEST(test_bipador_normalizou_sem_bipes_de_codigo);
+  RUN_TEST(test_bipador_abertura_e_curta);
   RUN_TEST(test_bipador_parado_fica_desligado);
   RUN_TEST(test_bipador_com_todas_as_falhas_toca_os_14_bipes);
   RUN_TEST(test_pulsos_aceita_inteiro_nao_negativo_e_recusa_o_resto);
