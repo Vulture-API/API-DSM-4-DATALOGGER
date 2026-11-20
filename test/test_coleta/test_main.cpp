@@ -647,6 +647,11 @@ void test_payload_com_todos_os_canais_cabe_no_buffer_do_firmware() {
   TEST_ASSERT_NOT_NULL(std::strstr(buffer, "\"an39\":4095.00"));
 }
 
+// Mantém o nível por n amostras seguidas.
+void manter(CanalPulsos& c, bool alto, int n = CanalPulsos::AMOSTRAS_ESTAVEIS) {
+  for (int i = 0; i < n; i++) c.amostrar(alto);
+}
+
 void test_primeira_amostra_so_define_o_nivel() {
   CanalPulsos c;
   TEST_ASSERT_FALSE(c.amostrar(false));
@@ -657,35 +662,43 @@ void test_primeira_amostra_so_define_o_nivel() {
 void test_conta_o_contato_fechando() {
   CanalPulsos c;
   c.amostrar(true);
-  TEST_ASSERT_FALSE(c.amostrar(false));
+  manter(c, false, CanalPulsos::AMOSTRAS_ESTAVEIS - 1);
+  TEST_ASSERT_EQUAL_UINT32(0, c.total());
   TEST_ASSERT_TRUE(c.amostrar(false));
-  c.amostrar(true);
-  c.amostrar(true);
-  c.amostrar(false);
-  c.amostrar(false);
+  manter(c, true);
+  manter(c, false);
   TEST_ASSERT_EQUAL_UINT32(2, c.total());
 }
 
-void test_quique_de_uma_amostra_nao_vira_pulso() {
+void test_quique_curto_nao_vira_pulso() {
   CanalPulsos c;
   c.amostrar(true);
   for (int i = 0; i < 5; i++) {
-    c.amostrar(false);
+    manter(c, false, CanalPulsos::AMOSTRAS_ESTAVEIS - 1);
     c.amostrar(true);
   }
   TEST_ASSERT_EQUAL_UINT32(0, c.total());
-  c.amostrar(false);
-  c.amostrar(false);
-  c.amostrar(true);
-  c.amostrar(false);
-  c.amostrar(false);
+  manter(c, false);
+  manter(c, true);
+  manter(c, false);
+  TEST_ASSERT_EQUAL_UINT32(2, c.total());
+}
+
+void test_vaivem_do_ima_conta_uma_vez_so() {
+  CanalPulsos c;
+  manter(c, true);
+  // Contato fecha, abre por 10 ms e fecha de novo enquanto o ímã passa.
+  manter(c, false, 6);
+  manter(c, true, 2);
+  manter(c, false, 6);
+  manter(c, true, 40);
   TEST_ASSERT_EQUAL_UINT32(1, c.total());
 }
 
 void test_contato_parado_fechado_nao_conta_de_novo() {
   CanalPulsos c;
   c.amostrar(true);
-  for (int i = 0; i < 100; i++) c.amostrar(false);
+  manter(c, false, 100);
   TEST_ASSERT_EQUAL_UINT32(1, c.total());
 }
 
@@ -700,7 +713,7 @@ void test_analogico_com_histerese() {
 
 void test_pulso_em_pino_analogico_com_pull_up_da_placa() {
   CanalPulsos c;
-  const int leituras[] = {4095, 4090, 2000, 300, 120, 2100, 3900, 4095, 4095};
+  const int leituras[] = {4095, 4090, 2000, 300, 120, 200, 150, 2100, 3900, 4095, 4095, 4095, 4095};
   for (int valor : leituras) c.amostrar(nivelAnalogico(valor, c.alto));
   TEST_ASSERT_EQUAL_UINT32(1, c.total());
 }
@@ -709,14 +722,11 @@ void test_pulsos_publicados_saem_da_contagem_e_os_novos_ficam() {
   CanalPulsos c;
   c.amostrar(true);
   for (int i = 0; i < 5; i++) {
-    c.amostrar(false);
-    c.amostrar(false);
-    c.amostrar(true);
-    c.amostrar(true);
+    manter(c, false);
+    manter(c, true);
   }
   const uint32_t enviado = c.total();
-  c.amostrar(false);
-  c.amostrar(false);
+  manter(c, false);
   c.descontar(enviado);
   TEST_ASSERT_EQUAL_UINT32(1, c.total());
 }
@@ -804,7 +814,8 @@ int main() {
   RUN_TEST(test_payload_com_todos_os_canais_cabe_no_buffer_do_firmware);
   RUN_TEST(test_primeira_amostra_so_define_o_nivel);
   RUN_TEST(test_conta_o_contato_fechando);
-  RUN_TEST(test_quique_de_uma_amostra_nao_vira_pulso);
+  RUN_TEST(test_quique_curto_nao_vira_pulso);
+  RUN_TEST(test_vaivem_do_ima_conta_uma_vez_so);
   RUN_TEST(test_contato_parado_fechado_nao_conta_de_novo);
   RUN_TEST(test_analogico_com_histerese);
   RUN_TEST(test_pulso_em_pino_analogico_com_pull_up_da_placa);

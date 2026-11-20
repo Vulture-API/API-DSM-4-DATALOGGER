@@ -48,7 +48,7 @@ O firmware lê todos os pinos livres em toda coleta e envia o valor bruto de cad
 | `anNN` | tensão no pino (ADC de 12 bits) | 34, 35, 36, 39 | 0 a 4095 (0 a 3,3 V) |
 | `puNN` | pulsos (contato fechando) desde o último envio | 34, 35, 36, 39 e 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 26, 27, 32, 33 | inteiro |
 
-- Os pulsos são contados por amostragem a cada 5 ms, então qualquer um desses pinos serve, inclusive 34 a 39. Nível que não se repete em duas amostras seguidas (quique do reed) não conta.
+- Os pulsos são contados por amostragem a cada 5 ms, então qualquer um desses pinos serve, inclusive 34 a 39. O nível só muda depois de 20 ms estável: quique do reed e vaivém do ímã não contam pulso a mais (conta até 25 pulsos por segundo).
 - Nos pinos digitais (incluindo 32 e 33) o firmware liga o pull-up interno e lê o nível digital, que tem histerese: cabo longo de contato seco não conta pulso falso. Os GPIO 34 a 39 não têm pull-up: ali o contato seco precisa do resistor da placa.
 - Pino analógico também conta pulsos: abaixo de 1/3 da escala é contato fechado, acima de 2/3 é aberto.
 - Os pulsos só saem da contagem depois de publicados: com o Wi-Fi ou o MQTT fora do ar, o acumulado vai no próximo envio.

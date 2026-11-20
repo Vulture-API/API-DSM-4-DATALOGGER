@@ -21,9 +21,9 @@ inline bool nivelAnalogico(int valor, bool anterior) {
 }
 
 struct CanalPulsos {
-  // O nível só muda depois de repetir em amostras seguidas: o quique do reed
-  // (poucos ms) não vira pulso.
-  static constexpr uint8_t AMOSTRAS_ESTAVEIS = 2;
+  // O nível só muda depois de repetir por 20 ms: o quique do reed e o vaivém
+  // do ímã passando pelo contato não viram pulso extra. Ainda conta até 25 Hz.
+  static constexpr uint8_t AMOSTRAS_ESTAVEIS = 4;
 
   bool iniciado = false;
   bool alto = true;
