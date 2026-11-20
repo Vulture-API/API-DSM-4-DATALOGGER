@@ -4,6 +4,13 @@
 
 namespace coleta {
 
+bool contemPino(const int* pinos, size_t quantidade, int pino) {
+  for (size_t i = 0; i < quantidade; i++) {
+    if (pinos[i] == pino) return true;
+  }
+  return false;
+}
+
 size_t montarCanais(int pinoDht, const int* analogicos, size_t qtdAnalogicos, const int* digitais,
                     size_t qtdDigitais, Sensor* destino, char (*nomes)[TAMANHO_NOME_CANAL], size_t maximo) {
   size_t n = 0;

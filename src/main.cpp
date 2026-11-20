@@ -188,8 +188,10 @@ void detectarDht() {
   amostragemPausada = true;
   delay(PERIODO_AMOSTRAGEM_MS * 2);
   preferencias.begin("datalogger", true);
-  const int salvo = preferencias.getInt("dht_pino", PINO_DHT);
+  int salvo = preferencias.getInt("dht_pino", PINO_DHT);
   preferencias.end();
+  // Pino gravado por um firmware com outra lista de pinos.
+  if (!contemPino(PINOS_DIGITAIS, QUANTIDADE_DIGITAIS, salvo)) salvo = PINO_DHT;
   int achado = respondeComoDht(salvo) ? salvo : -1;
   for (size_t i = 0; achado < 0 && i < QUANTIDADE_DIGITAIS; i++) {
     if (PINOS_DIGITAIS[i] != salvo && respondeComoDht(PINOS_DIGITAIS[i])) achado = PINOS_DIGITAIS[i];

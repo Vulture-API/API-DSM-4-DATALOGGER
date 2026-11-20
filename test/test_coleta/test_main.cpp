@@ -620,6 +620,14 @@ void test_canais_nao_passam_do_maximo() {
   TEST_ASSERT_EQUAL_STRING("an34", poucos[2].identificador);
 }
 
+void test_dht22_so_e_procurado_em_pino_digital_lido() {
+  TEST_ASSERT_TRUE(contemPino(PINOS_DIGITAIS, QUANTIDADE_DIGITAIS, PINO_DHT));
+  TEST_ASSERT_TRUE(contemPino(PINOS_DIGITAIS, QUANTIDADE_DIGITAIS, 32));
+  TEST_ASSERT_FALSE(contemPino(PINOS_DIGITAIS, QUANTIDADE_DIGITAIS, 34));
+  TEST_ASSERT_FALSE(contemPino(PINOS_DIGITAIS, QUANTIDADE_DIGITAIS, PINO_BUZZER));
+  TEST_ASSERT_FALSE(contemPino(PINOS_DIGITAIS, 0, PINO_DHT));
+}
+
 void test_buzzer_fora_dos_pinos_lidos() {
   TEST_ASSERT_TRUE(semBuzzer(PINOS_ANALOGICOS, QUANTIDADE_ANALOGICOS));
   TEST_ASSERT_TRUE(semBuzzer(PINOS_DIGITAIS, QUANTIDADE_DIGITAIS));
@@ -791,6 +799,7 @@ int main() {
   RUN_TEST(test_dht22_em_outro_pino_libera_o_gpio4_para_pulsos);
   RUN_TEST(test_sem_dht22_nao_ha_temperatura_nem_umidade);
   RUN_TEST(test_canais_nao_passam_do_maximo);
+  RUN_TEST(test_dht22_so_e_procurado_em_pino_digital_lido);
   RUN_TEST(test_buzzer_fora_dos_pinos_lidos);
   RUN_TEST(test_payload_com_todos_os_canais_cabe_no_buffer_do_firmware);
   RUN_TEST(test_primeira_amostra_so_define_o_nivel);
