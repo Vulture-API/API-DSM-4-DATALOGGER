@@ -21,6 +21,15 @@ bool igualSemCaixa(const char* a, const char* b) {
 bool dentro(float valor, float minimo, float maximo) {
   return std::isfinite(valor) && valor >= minimo && valor <= maximo;
 }
+
+bool eDht22(Fonte fonte) { return fonte == Fonte::Dht22Temperatura || fonte == Fonte::Dht22Umidade; }
+
+// O mesmo pino pode ter temperatura e umidade (DHT22) ou valor e pulsos
+// (analógico); fora isso, um canal por pino.
+bool podemDividirPino(Fonte a, Fonte b) {
+  if (eDht22(a) && eDht22(b)) return a != b;
+  return (a == Fonte::Analogico && b == Fonte::Pulsos) || (a == Fonte::Pulsos && b == Fonte::Analogico);
+}
 }  // namespace
 
 bool identificadorValido(const char* identificador) {
@@ -32,6 +41,10 @@ bool identificadorValido(const char* identificador) {
 }
 
 bool pinoAnalogicoValido(int pino) { return pino >= 32 && pino <= 39; }
+
+bool pinoPulsosValido(int pino) { return pinoComPullUpValido(pino) || pinoAnalogicoValido(pino); }
+
+bool pinoComPullUpValido(int pino) { return (pino >= 0 && pino <= 5) || (pino >= 12 && pino <= 27) || pino == 32 || pino == 33; }
 
 const char* descrever(ErroConfiguracao erro) {
   switch (erro) {
@@ -49,6 +62,10 @@ const char* descrever(ErroConfiguracao erro) {
       return "identificador_repetido";
     case ErroConfiguracao::PinoAnalogicoInvalido:
       return "pino_analogico_invalido";
+    case ErroConfiguracao::PinoSemPullUp:
+      return "pino_sem_pull_up";
+    case ErroConfiguracao::PinoRepetido:
+      return "pino_repetido";
   }
   return "desconhecido";
 }
@@ -70,6 +87,17 @@ ErroConfiguracao validarConfiguracao(const Sensor* sensores, size_t quantidade) 
     if (sensores[i].fonte == Fonte::Analogico && !pinoAnalogicoValido(sensores[i].pino)) {
       return ErroConfiguracao::PinoAnalogicoInvalido;
     }
+    if (sensores[i].fonte == Fonte::Digital && !pinoComPullUpValido(sensores[i].pino)) {
+      return ErroConfiguracao::PinoSemPullUp;
+    }
+    if (sensores[i].fonte == Fonte::Pulsos && !pinoPulsosValido(sensores[i].pino)) {
+      return ErroConfiguracao::PinoSemPullUp;
+    }
+    for (size_t j = 0; j < i; j++) {
+      if (sensores[j].pino == sensores[i].pino && !podemDividirPino(sensores[i].fonte, sensores[j].fonte)) {
+        return ErroConfiguracao::PinoRepetido;
+      }
+    }
   }
   return ErroConfiguracao::Nenhum;
 }
@@ -84,6 +112,8 @@ bool valorValido(Fonte fonte, float valor) {
       return dentro(valor, 0.0f, 4095.0f);
     case Fonte::Digital:
       return valor == 0.0f || valor == 1.0f;
+    case Fonte::Pulsos:
+      return dentro(valor, 0.0f, PULSOS_MAX) && valor == std::floor(valor);
   }
   return false;
 }

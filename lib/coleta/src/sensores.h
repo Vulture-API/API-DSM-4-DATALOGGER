@@ -4,14 +4,15 @@
 
 namespace coleta {
 
-// De onde vem a leitura de cada sensor da estação (SCRUM-603). O datalogger
-// envia o valor bruto; a conversão para a unidade do parâmetro é do sistema,
-// com o ganho e o offset cadastrados para o sensor.
+// De onde vem a leitura de cada canal da placa (SCRUM-603, SCRUM-621). O
+// datalogger envia o valor bruto; a conversão para a unidade do parâmetro é do
+// sistema, com o fator, o ganho e o offset cadastrados para o sensor.
 enum class Fonte {
   Dht22Temperatura,  // °C
   Dht22Umidade,      // %
   Analogico,         // ADC de 12 bits: 0 a 4095
-  Digital,           // 0 ou 1
+  Digital,           // 0 ou 1 (pull-up interno: contato aberto = 1)
+  Pulsos,            // pulsos contados desde o último envio (pluviômetro, anemômetro)
 };
 
 struct Sensor {
@@ -26,7 +27,7 @@ struct Medida {
   bool ok;
 };
 
-constexpr size_t MAXIMO_SENSORES = 8;
+constexpr size_t MAXIMO_SENSORES = 30;
 
 // Só letras, números, "_" e "-": o identificador vai entre aspas no JSON.
 bool identificadorValido(const char* identificador);
@@ -34,6 +35,18 @@ bool identificadorValido(const char* identificador);
 // No ESP32 o ADC2 não funciona com o Wi-Fi ligado: entrada analógica só nos
 // pinos do ADC1 (GPIO 32 a 39).
 bool pinoAnalogicoValido(int pino);
+
+// Entrada digital usa o pull-up interno: GPIO 0 a 5, 12 a 27, 32 e 33. Ficam
+// fora os da flash (6 a 11) e os GPIO 34 a 39, que só são entrada e não têm
+// pull-up.
+bool pinoComPullUpValido(int pino);
+
+// Pulsos são contados por amostragem: qualquer pino de entrada serve, inclusive
+// os GPIO 34 a 39 (com o resistor de pull-up da placa).
+bool pinoPulsosValido(int pino);
+
+// Quantidade de pulsos acima disso numa coleta é falha (sensor travado).
+constexpr float PULSOS_MAX = 100000.0f;
 
 enum class ErroConfiguracao {
   Nenhum,
@@ -43,6 +56,8 @@ enum class ErroConfiguracao {
   IdentificadorReservado,
   IdentificadorRepetido,
   PinoAnalogicoInvalido,
+  PinoSemPullUp,
+  PinoRepetido,
 };
 
 const char* descrever(ErroConfiguracao erro);
