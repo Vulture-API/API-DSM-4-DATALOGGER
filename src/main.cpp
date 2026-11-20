@@ -41,6 +41,8 @@ DHT* dht = nullptr;
 volatile int pinoDht = -1;
 uint8_t falhasDht = 0;
 uint32_t coletasSemDht = 0;
+float temperaturaDht = NAN;
+float umidadeDht = NAN;
 
 // Estado por GPIO, atualizado pela tarefa de amostragem.
 CanalPulsos pulsos[40];
@@ -158,10 +160,27 @@ void montarListaCanais() {
   }
 }
 
+// O DHT22 é lido com a amostragem parada: a resposta dele depende de tempo em
+// microssegundos.
+bool lerDht(DHT& sensor, float& temperatura, float& umidade) {
+  const bool pausada = amostragemPausada;
+  amostragemPausada = true;
+  delay(PERIODO_AMOSTRAGEM_MS * 2);
+  temperatura = sensor.readTemperature(false, true);
+  umidade = sensor.readHumidity(false);
+  amostragemPausada = pausada;
+  return !isnan(temperatura) && !isnan(umidade);
+}
+
+// Duas respostas válidas seguidas: uma leitura solta não basta para dizer que
+// o DHT22 está naquele pino.
 bool respondeComoDht(int pino) {
   DHT teste(pino, DHT22);
   teste.begin();
-  return !isnan(teste.readTemperature(false, true));
+  float t, u;
+  if (!lerDht(teste, t, u)) return false;
+  delay(2100);
+  return lerDht(teste, t, u);
 }
 
 // Procura o DHT22 nos pinos digitais, começando pelo último em que foi achado.
@@ -245,9 +264,9 @@ void manterMqtt() {
 float lerBruto(const Sensor& sensor) {
   switch (sensor.fonte) {
     case Fonte::Dht22Temperatura:
-      return dht ? dht->readTemperature() : NAN;
+      return temperaturaDht;
     case Fonte::Dht22Umidade:
-      return dht ? dht->readHumidity() : NAN;
+      return umidadeDht;
     case Fonte::Analogico:
       return static_cast<float>(ultimoAnalogico[sensor.pino]);
     case Fonte::Digital:
@@ -269,6 +288,13 @@ void coletarEPublicar() {
     detectarDht();
   }
   if (!configuracaoOk) return;
+
+  temperaturaDht = umidadeDht = NAN;
+  if (dht && !lerDht(*dht, temperaturaDht, umidadeDht)) {
+    // Uma nova tentativa depois do intervalo mínimo do sensor.
+    delay(2100);
+    lerDht(*dht, temperaturaDht, umidadeDht);
+  }
 
   Medida medidas[MAXIMO_SENSORES];
   char msg[96];
@@ -326,6 +352,7 @@ void coletarEPublicar() {
 
 // Valor atual de cada canal, para achar onde o sensor foi ligado.
 void mostrarCanais() {
+  if (dht) lerDht(*dht, temperaturaDht, umidadeDht);
   char linha[96];
   size_t usado = 0;
   for (size_t i = 0; i < quantidadeCanais; i++) {
