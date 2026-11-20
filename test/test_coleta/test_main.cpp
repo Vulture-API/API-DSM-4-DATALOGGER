@@ -7,6 +7,7 @@
 
 #include "alarme.h"
 #include "canais.h"
+#include "fila.h"
 #include "config.h"
 #include "intervalo.h"
 #include "leitura.h"
@@ -747,6 +748,63 @@ void test_descontar_mais_que_o_pendente_nao_estoura() {
   TEST_ASSERT_EQUAL_UINT32(0, c.total());
 }
 
+void test_fila_sai_na_ordem_em_que_entrou() {
+  FilaEnvio<3, 16> f;
+  TEST_ASSERT_TRUE(f.vazia());
+  TEST_ASSERT_NULL(f.primeira());
+  f.guardar("a");
+  f.guardar("b");
+  TEST_ASSERT_EQUAL_UINT32(2, f.tamanho());
+  TEST_ASSERT_EQUAL_STRING("a", f.primeira());
+  f.remover();
+  TEST_ASSERT_EQUAL_STRING("b", f.primeira());
+  f.remover();
+  TEST_ASSERT_TRUE(f.vazia());
+  f.remover();
+  TEST_ASSERT_TRUE(f.vazia());
+}
+
+void test_fila_cheia_descarta_a_mais_antiga() {
+  FilaEnvio<3, 16> f;
+  const char* mensagens[] = {"1", "2", "3", "4", "5"};
+  for (const char* m : mensagens) f.guardar(m);
+  TEST_ASSERT_EQUAL_UINT32(3, f.tamanho());
+  TEST_ASSERT_EQUAL_UINT32(2, f.descartadas());
+  TEST_ASSERT_EQUAL_STRING("3", f.primeira());
+  f.remover();
+  f.guardar("6");
+  TEST_ASSERT_EQUAL_STRING("4", f.primeira());
+  f.remover();
+  TEST_ASSERT_EQUAL_STRING("5", f.primeira());
+  f.remover();
+  TEST_ASSERT_EQUAL_STRING("6", f.primeira());
+}
+
+void test_fila_recusa_mensagem_maior_que_o_item() {
+  FilaEnvio<2, 4> f;
+  TEST_ASSERT_FALSE(f.guardar("abcd"));
+  TEST_ASSERT_TRUE(f.vazia());
+  TEST_ASSERT_TRUE(f.guardar("abc"));
+  TEST_ASSERT_EQUAL_STRING("abc", f.primeira());
+}
+
+void test_fila_guarda_o_payload_completo_da_placa() {
+  Sensor canaisTeste[MAXIMO_SENSORES];
+  char nomes[MAXIMO_SENSORES][TAMANHO_NOME_CANAL];
+  const size_t n = montarCanais(PINO_DHT, PINOS_ANALOGICOS, QUANTIDADE_ANALOGICOS, PINOS_DIGITAIS,
+                                QUANTIDADE_DIGITAIS, canaisTeste, nomes, MAXIMO_SENSORES);
+  Medida medidas[MAXIMO_SENSORES];
+  for (size_t i = 0; i < n; i++) medidas[i] = avaliarMedida(canaisTeste[i], 4095.0f);
+  medidas[0] = avaliarMedida(canaisTeste[0], -12.5f);
+  medidas[1] = avaliarMedida(canaisTeste[1], 99.9f);
+  char buffer[768];
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Rejeicao::Nenhuma),
+                        static_cast<int>(montarPayload(MAC, AGORA, medidas, n, buffer, sizeof buffer)));
+  static FilaEnvio<2, 768> f;
+  TEST_ASSERT_TRUE(f.guardar(buffer));
+  TEST_ASSERT_EQUAL_STRING(buffer, f.primeira());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_intervalo_aceita_limites_e_rejeita_fora_da_faixa);
@@ -822,5 +880,9 @@ int main() {
   RUN_TEST(test_pulsos_publicados_saem_da_contagem_e_os_novos_ficam);
   RUN_TEST(test_pulsos_nao_publicados_acumulam_para_o_proximo_envio);
   RUN_TEST(test_descontar_mais_que_o_pendente_nao_estoura);
+  RUN_TEST(test_fila_sai_na_ordem_em_que_entrou);
+  RUN_TEST(test_fila_cheia_descarta_a_mais_antiga);
+  RUN_TEST(test_fila_recusa_mensagem_maior_que_o_item);
+  RUN_TEST(test_fila_guarda_o_payload_completo_da_placa);
   return UNITY_END();
 }

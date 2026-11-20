@@ -7,6 +7,7 @@
 
 #include "alarme.h"
 #include "canais.h"
+#include "fila.h"
 #include "config.h"
 #include "intervalo.h"
 #include "leitura.h"
@@ -81,6 +82,11 @@ constexpr uint32_t ESPERA_INICIAL_MS = 20000;
 // Cabe a mensagem com MAXIMO_SENSORES campos; o pacote MQTT leva também o tópico.
 constexpr size_t TAMANHO_PAYLOAD = 768;
 constexpr uint16_t TAMANHO_PACOTE_MQTT = 1024;
+
+// 48 leituras: 48 min sem broker no intervalo padrão de 60 s.
+constexpr size_t CAPACIDADE_FILA = 48;
+constexpr int ENVIOS_POR_VOLTA = 4;
+FilaEnvio<CAPACIDADE_FILA, TAMANHO_PAYLOAD> fila;
 
 uint32_t tentativasMqtt = 0;
 uint32_t proximaTentativaMs = 0;
@@ -262,6 +268,28 @@ void manterMqtt() {
   proximaTentativaMs = millis() + atrasoReconexaoMs(tentativasMqtt++);
 }
 
+// Publica a fila na ordem, poucas por volta do loop para não travar o resto.
+void enviarFila() {
+  static uint32_t descartadasAvisadas = 0;
+  if (fila.descartadas() != descartadasAvisadas) {
+    descartadasAvisadas = fila.descartadas();
+    char aviso[80];
+    snprintf(aviso, sizeof aviso, "fila de envio cheia: %lu leituras antigas descartadas",
+             static_cast<unsigned long>(descartadasAvisadas));
+    escreverLog("WARN", aviso);
+  }
+  for (int i = 0; i < ENVIOS_POR_VOLTA && !fila.vazia() && mqtt.connected(); i++) {
+    if (!mqtt.publish(topico, fila.primeira())) {
+      status.registrar(Evento::FalhaPublicacao);
+      escreverLog("ERRO", "publish falhou; a leitura continua na fila");
+      return;
+    }
+    status.registrar(Evento::Publicada);
+    escreverLog("INFO", fila.primeira());
+    fila.remover();
+  }
+}
+
 float lerBruto(const Sensor& sensor) {
   switch (sensor.fonte) {
     case Fonte::Dht22Temperatura:
@@ -329,26 +357,25 @@ void coletarEPublicar() {
     escreverLog("WARN", descrever(motivo));
     return;
   }
-  if (!mqtt.connected()) {
-    status.registrar(Evento::SemConexao);
-    escreverLog("WARN", "leitura descartada: MQTT fora do ar");
+  if (!fila.guardar(payload)) {
+    status.registrar(Evento::PayloadRejeitado);
+    escreverLog("ERRO", "leitura maior que o item da fila de envio");
     return;
   }
-  if (mqtt.publish(topico, payload)) {
-    // Só agora os pulsos publicados saem da contagem; os que chegaram durante
-    // o envio (ou numa coleta que não publicou) continuam pendentes.
-    for (size_t i = 0; i < quantidadeCanais; i++) {
-      if (canais[i].fonte != Fonte::Pulsos || !medidas[i].ok) continue;
-      portENTER_CRITICAL(&travaPulsos);
-      pulsos[canais[i].pino].descontar(static_cast<uint32_t>(medidas[i].valor));
-      portEXIT_CRITICAL(&travaPulsos);
-    }
-    status.registrar(Evento::Publicada);
-    escreverLog("INFO", payload);
-  } else {
-    status.registrar(Evento::FalhaPublicacao);
-    escreverLog("ERRO", "publish falhou");
+  // Os pulsos agora estão na mensagem da fila; os que chegarem depois ficam
+  // para a próxima coleta.
+  for (size_t i = 0; i < quantidadeCanais; i++) {
+    if (canais[i].fonte != Fonte::Pulsos || !medidas[i].ok) continue;
+    portENTER_CRITICAL(&travaPulsos);
+    pulsos[canais[i].pino].descontar(static_cast<uint32_t>(medidas[i].valor));
+    portEXIT_CRITICAL(&travaPulsos);
   }
+  if (!mqtt.connected()) {
+    status.registrar(Evento::SemConexao);
+    snprintf(msg, sizeof msg, "MQTT fora do ar: leitura guardada (%u na fila)", static_cast<unsigned>(fila.tamanho()));
+    escreverLog("WARN", msg);
+  }
+  enviarFila();
 }
 
 // Valor atual de cada canal, para achar onde o sensor foi ligado.
@@ -398,10 +425,10 @@ void lerComando() {
     } else {
       snprintf(dhtTexto, sizeof dhtTexto, "nenhum");
     }
-    snprintf(msg, sizeof msg, "estacao=%s canais=%u dht=%s intervalo=%lus wifi=%s mqtt=%s buzzer=%s alarmes=%s %s", mac,
+    snprintf(msg, sizeof msg, "estacao=%s canais=%u dht=%s intervalo=%lus wifi=%s mqtt=%s fila=%u buzzer=%s alarmes=%s %s", mac,
              static_cast<unsigned>(quantidadeCanais), dhtTexto, static_cast<unsigned long>(agendador.intervaloS()),
              WiFi.status() == WL_CONNECTED ? "ok" : "off", mqtt.connected() ? "ok" : "off",
-             buzzerLigado ? "on" : "off", alarmes, resumo);
+             static_cast<unsigned>(fila.tamanho()), buzzerLigado ? "on" : "off", alarmes, resumo);
     escreverLog("INFO", msg);
   } else if (linha == "canais") {
     mostrarCanais();
@@ -466,7 +493,11 @@ void loop() {
   manterMqtt();
   mqtt.loop();
   lerComando();
-  if (agendador.deveColetar(millis())) coletarEPublicar();
+  if (agendador.deveColetar(millis())) {
+    coletarEPublicar();
+  } else if (!fila.vazia()) {
+    enviarFila();
+  }
   cuidarAlarme();
   delay(50);
 }

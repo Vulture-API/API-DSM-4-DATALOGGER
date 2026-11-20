@@ -51,7 +51,7 @@ O firmware lê todos os pinos livres em toda coleta e envia o valor bruto de cad
 - Os pulsos são contados por amostragem a cada 5 ms, então qualquer um desses pinos serve, inclusive 34 a 39. O nível só muda depois de 20 ms estável: quique do reed e vaivém do ímã não contam pulso a mais (conta até 25 pulsos por segundo).
 - Nos pinos digitais (incluindo 32 e 33) o firmware liga o pull-up interno e lê o nível digital, que tem histerese: cabo longo de contato seco não conta pulso falso. Os GPIO 34 a 39 não têm pull-up: ali o contato seco precisa do resistor da placa.
 - Pino analógico também conta pulsos: abaixo de 1/3 da escala é contato fechado, acima de 2/3 é aberto.
-- Os pulsos só saem da contagem depois de publicados: com o Wi-Fi ou o MQTT fora do ar, o acumulado vai no próximo envio.
+- Com o Wi-Fi ou o MQTT fora do ar a coleta continua: cada leitura (pulsos inclusos) fica numa fila na RAM, com o `unix_time` da medida, e sai na ordem quando a conexão volta. Cabem 48 leituras (48 min no intervalo de 60 s); depois disso a mais antiga é descartada e o log avisa. Reiniciar a placa perde a fila. O comando `status` mostra `fila=N`.
 - O DHT22 é procurado ao ligar, a cada 10 coletas sem ele e depois de 3 coletas sem resposta. O pino achado fica gravado e sai da lista de pulsos.
 
 ### Achar o canal do sensor
