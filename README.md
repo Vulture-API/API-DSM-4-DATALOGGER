@@ -13,12 +13,12 @@ Hardware e ligações: [docs/hardware.md](docs/hardware.md).
 Mesmo formato do simulador do INFRA:
 
 ```json
-{"estacao_id":"24:6F:28:AB:CD:EF","unix_time":1794100000,"temp":23.46,"umid":61.00}
+{"estacao_id":"24:6F:28:AB:CD:EF","unix_time":1794100000,"temp":23.46,"umid":61.00,"an32":0.00,"an34":1873.00,...,"pu35":3.00,...,"pu27":0.00}
 ```
 
 - `estacao_id` é o MAC do ESP32, que precisa estar cadastrado como estação no backend.
-- `temp` e `umid` são os `local_identifier` dos sensores dessa estação. A lista de sensores fica na tabela `SENSORES` de `include/config.h`: cada linha é um campo do payload.
-- Outros sensores (entrada analógica ou digital) entram por essa tabela, sem mudar a rotina de coleta. O valor enviado é o bruto; o sistema converte com o ganho e o offset do cadastro. Passo a passo em [docs/hardware.md](docs/hardware.md).
+- Todos os pinos livres são lidos em toda coleta: `temp` e `umid` (DHT22, achado sozinho), `anNN` (valor do ADC nos GPIO 32 a 39) e `puNN` (pulsos em todos os pinos lidos). Pinos em `include/config.h`.
+- Sensor novo não exige mudar o firmware nem saber o GPIO: liga em qualquer conector, o comando `canais` da serial mostra qual canal mudou, e o sensor é cadastrado no sistema com esse identificador e o ganho/offset da conversão. Canal sem sensor cadastrado é ignorado. Passo a passo em [docs/hardware.md](docs/hardware.md).
 - Leitura que falhou não entra; sem nenhuma leitura válida, nada é publicado.
 - Só publica com o relógio sincronizado por NTP.
 
@@ -39,14 +39,15 @@ pio test -e native              # testes da lógica, sem placa
 Pela serial:
 
 - `intervalo 120` muda a frequência de coleta (10 a 3600 s) e grava na flash
-- `status` mostra MAC, intervalo, Wi-Fi, MQTT, buzzer, alarmes ativos e contadores de coleta e falha
-- `buzzer off` / `buzzer on` desliga e religa o som do alarme (grava na flash); `buzzer teste` toca todos os códigos
+- `status` mostra MAC, quantidade de canais, pino do DHT22, intervalo, Wi-Fi, MQTT, buzzer, alarmes ativos e contadores de coleta e falha
+- `canais` mostra o valor atual de cada canal (para achar onde o sensor foi ligado)
+- `buzzer off` / `buzzer on` desliga e religa o som do alarme (grava na flash); `buzzer teste` toca todos os códigos; `buzzer abertura` e `buzzer normalizou` tocam os sons de início e de volta ao normal
 
 ## Organização
 
 | Pasta | O quê |
 | --- | --- |
-| `lib/coleta` | lógica sem dependência de hardware: agendamento, validação, payload, status e alarme (testada em `test/`) |
+| `lib/coleta` | lógica sem dependência de hardware: agendamento, validação, canais, pulsos, payload, status e alarme (testada em `test/`) |
 | `src/main.cpp` | sensor, Wi-Fi, NTP, MQTT, buzzer e serial |
 | `include/` | pinos, identificadores e segredos |
 

@@ -38,33 +38,36 @@ O pino está em `include/pinos.h`. GPIO4 não interfere no boot do ESP32 (difere
 - Leitura a cada intervalo de coleta (mínimo 10 s; o DHT22 precisa de 2 s entre leituras).
 - `NaN` ou valor fora da faixa do sensor é falha de leitura e não vai para o payload.
 
-## Outros sensores (SCRUM-603)
+## Canais da placa (SCRUM-603, SCRUM-621)
 
-Os sensores da estação ficam na tabela `SENSORES` de `include/config.h`. Cada linha vira um campo do payload, com o valor bruto lido. A conversão para a unidade do parâmetro é feita pelo sistema, com o ganho e o offset cadastrados para o sensor.
+O firmware lê todos os pinos livres em toda coleta e envia o valor bruto de cada um. Para ligar um sensor novo não é preciso mexer no firmware nem saber o GPIO do conector: ligue onde quiser, veja qual canal mudou e cadastre o sensor no sistema com esse identificador. Canal sem sensor cadastrado é ignorado pelo tratamento.
 
-| Fonte | Leitura | Valor enviado | Pinos |
+| Canal | O que é | Pinos | Valor enviado |
 | --- | --- | --- | --- |
-| `Dht22Temperatura` | temperatura do DHT22 | °C, de -40 a 80 | `PINO_DHT` |
-| `Dht22Umidade` | umidade do DHT22 | %, de 0 a 100 | `PINO_DHT` |
-| `Analogico` | tensão no pino, pelo ADC de 12 bits | 0 a 4095 (0 a 3,3 V) | só GPIO 32 a 39 |
-| `Digital` | nível do pino | 0 ou 1 | qualquer GPIO de entrada |
+| `temp`, `umid` | DHT22, procurado sozinho nos pinos digitais | o primeiro que responder (começa pelo GPIO4) | °C e % |
+| `anNN` | tensão no pino (ADC de 12 bits) | 34, 35, 36, 39 | 0 a 4095 (0 a 3,3 V) |
+| `puNN` | pulsos (contato fechando) desde o último envio | 34, 35, 36, 39 e 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 27, 32, 33 | inteiro |
 
-Para incluir um sensor:
+- Os pulsos são contados por amostragem a cada 5 ms, então qualquer um desses pinos serve, inclusive 34 a 39. O nível só muda depois de 20 ms estável: quique do reed e vaivém do ímã não contam pulso a mais (conta até 25 pulsos por segundo).
+- Nos pinos digitais (incluindo 32 e 33) o firmware liga o pull-up interno e lê o nível digital, que tem histerese: cabo longo de contato seco não conta pulso falso. Os GPIO 34 a 39 não têm pull-up: ali o contato seco precisa do resistor da placa.
+- Pino analógico também conta pulsos: abaixo de 1/3 da escala é contato fechado, acima de 2/3 é aberto.
+- Com o Wi-Fi ou o MQTT fora do ar a coleta continua: cada leitura (pulsos inclusos) fica numa fila na RAM, com o `unix_time` da medida, e sai na ordem quando a conexão volta. Cabem 48 leituras (48 min no intervalo de 60 s); depois disso a mais antiga é descartada e o log avisa. Reiniciar a placa perde a fila. O comando `status` mostra `fila=N`.
+- O DHT22 é procurado ao ligar, a cada 10 coletas sem ele e depois de 3 coletas sem resposta. O pino achado fica gravado e sai da lista de pulsos.
 
-1. Ligue o sensor. Sinal analógico só nos GPIO 32 a 39: os outros pinos analógicos do ESP32 não leem com o Wi-Fi ligado. O sinal não pode passar de 3,3 V.
-2. Acrescente uma linha em `SENSORES` com identificador, fonte e pino, e grave o firmware.
-3. No sistema, cadastre o tipo (se ainda não existir) e o sensor na estação, com o **mesmo identificador**.
-4. Informe o ganho e o offset do sensor para converter o valor bruto.
+### Achar o canal do sensor
 
-Exemplo, sensor de luminosidade (LDR em divisor de tensão no GPIO34):
+1. Ligue o sensor e grave/reinicie a placa.
+2. Na serial, mande `canais`: aparece o valor de cada canal. Mexa no sensor (vire a gangorra do pluviômetro, gire o anemômetro) e mande `canais` de novo: o canal que mudou é o do sensor. O mesmo aparece no payload de cada envio.
+3. No sistema, cadastre o sensor na estação com esse identificador e a calibração: `valor = bruto × fator × ganho + offset`.
 
-```cpp
-{"lux", coleta::Fonte::Analogico, 34},
-```
+| Sensor | Ligação | Canal | Ganho | Resultado |
+| --- | --- | --- | --- | --- |
+| Pluviômetro basculante de 0,2 mm (2 fios) | GND e sinal (na placa da Fatec: GND e `Pluviometro` do conector J11; nunca 3V3 + GND) | o `puNN` que contar | `0.2` | mm de chuva no intervalo |
+| Anemômetro de copo | GND e sinal | o `puNN` que contar | velocidade por pulso ÷ intervalo em s | velocidade média |
+| LDR em divisor de tensão | sinal no pino analógico | o `anNN` que mudar | `0.000805860805` (3,3 / 4095) | volts |
+| Sensor 0–3,3 V linear (ex.: 0–100 %) | sinal no pino analógico | o `anNN` | `0.0244200244` (100 / 4095) | % |
 
-No cadastro, um ganho de `0,000805860805` (3,3 / 4095) grava a leitura em volts; o ganho e o offset do fabricante convertem para lux.
-
-Limites: até 8 sensores por estação; identificadores sem repetição, só com letras, números, `_` e `-`. Configuração inválida aparece na serial ao ligar e a estação não coleta. Sensor que falha fica fora da mensagem e os demais são enviados.
+Pinos que o firmware não lê: 0 e 2 (boot e LED), 1 e 3 (serial), 6 a 11 (flash) e 26 (buzzer). Os GPIO 5, 12 e 15 são lidos só depois do boot.
 
 ## Buzzer (SCRUM-619)
 
@@ -72,12 +75,12 @@ O buzzer toca só falha que dura: queda curta de Wi-Fi ou sensor que perde uma c
 
 | Ligação | ESP32 |
 | --- | --- |
-| GPIO25 → 1 kΩ → base do BC547 | GPIO25 |
+| GPIO26 → 1 kΩ → base do BC547 | GPIO26 |
 | buzzer `+` | 3V3 (ou VIN, 5 V, para buzzer de 5 V) |
 | buzzer `-` → coletor do BC547 | — |
 | emissor do BC547 | GND |
 
-Buzzer pequeno de 3,3 V que puxa menos de 20 mA pode ir direto: `+` no GPIO25 e `-` no GND. Módulo de 3 pinos que apita com o I/O em nível baixo: `BUZZER_LIGA_EM_ALTO = false` em `include/pinos.h`.
+Buzzer pequeno de 3,3 V que puxa menos de 20 mA pode ir direto: `+` no GPIO26 e `-` no GND. Módulo de 3 pinos (VCC no 3V3, I/O no GPIO26, GND no GND) que apita com o I/O em nível baixo: `BUZZER_LIGA_EM_ALTO = false` em `include/pinos.h`.
 
 | Falha | Quando toca | Bipes |
 | --- | --- | --- |
@@ -86,9 +89,9 @@ Buzzer pequeno de 3,3 V que puxa menos de 20 mA pode ir direto: `+` no GPIO25 e 
 | hora | relógio sem NTP por 30 min (nada é publicado) | 4 |
 | configuração | `config.h` inválido, na inicialização | 5 |
 
-Com mais de uma falha os códigos tocam em sequência, com 1 s entre eles. O toque se repete a cada 30 min enquanto a falha durar e de novo na hora se outra falha passar dos 30 min. Quando tudo volta, um bipe longo. Os tempos ficam em `lib/coleta/src/alarme.h` (`PERSISTENCIA_MS` e `REPETICAO_MS`).
+Cada código começa com uma sirene curta ("uí-ó-uí-ó") e depois os bipes graves e lentos (800 Hz), para contar sem confundir. Com mais de uma falha os códigos tocam em sequência, com 1 s entre eles. O toque se repete a cada 30 min enquanto a falha durar e de novo na hora se outra falha passar dos 30 min. Quando tudo volta, um tom agudo longo e liso; ao ligar, uma escadinha rápida subindo. As notas saem por PWM (`BUZZER_FREQUENCIA_HZ` em `include/pinos.h`), então soam em buzzer passivo e ativo; uma tarefa no núcleo 0 toca a cada 5 ms, sem depender do loop. Os tempos ficam em `lib/coleta/src/alarme.h` (`PERSISTENCIA_MS` e `REPETICAO_MS`).
 
-Pela serial: `buzzer teste` toca os quatro códigos; `buzzer off` e `buzzer on` desligam e religam o som (grava na flash, o alarme continua no log); `status` mostra `buzzer=on|off` e `alarmes=` com as falhas confirmadas.
+Pela serial: `buzzer teste` toca os quatro códigos, `buzzer abertura` e `buzzer normalizou` tocam os outros dois sons; `buzzer off` e `buzzer on` desligam e religam o som (grava na flash, o alarme continua no log); `status` mostra `buzzer=on|off` e `alarmes=` com as falhas confirmadas.
 
 ## Registro da montagem
 
