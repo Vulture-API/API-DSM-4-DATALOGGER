@@ -431,7 +431,9 @@ void setup() {
 
   detectarDht();
   if (pinoDht < 0) escreverLog("WARN", "DHT22 nao encontrado");
-  xTaskCreatePinnedToCore(amostrar, "amostragem", 3072, nullptr, 1, nullptr, 1);
+  // No núcleo 0: no 1 (o do loop) a tarefa interrompia a leitura do DHT22, que
+  // depende de tempo em microssegundos.
+  xTaskCreatePinnedToCore(amostrar, "amostragem", 3072, nullptr, 1, nullptr, 0);
   snprintf(msg, sizeof msg, "%u canais; comando \"canais\" mostra o valor de cada um",
            static_cast<unsigned>(quantidadeCanais));
   escreverLog("INFO", msg);
