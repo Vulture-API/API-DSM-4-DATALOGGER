@@ -46,7 +46,7 @@ O firmware lê todos os pinos livres em toda coleta e envia o valor bruto de cad
 | --- | --- | --- | --- |
 | `temp`, `umid` | DHT22, procurado sozinho nos pinos digitais | o primeiro que responder (começa pelo GPIO4) | °C e % |
 | `anNN` | tensão no pino (ADC de 12 bits) | 34, 35, 36, 39 | 0 a 4095 (0 a 3,3 V) |
-| `puNN` | pulsos (contato fechando) desde o último envio | 34, 35, 36, 39 e 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 26, 27, 32, 33 | inteiro |
+| `puNN` | pulsos (contato fechando) desde o último envio | 34, 35, 36, 39 e 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 27, 32, 33 | inteiro |
 
 - Os pulsos são contados por amostragem a cada 5 ms, então qualquer um desses pinos serve, inclusive 34 a 39. O nível só muda depois de 20 ms estável: quique do reed e vaivém do ímã não contam pulso a mais (conta até 25 pulsos por segundo).
 - Nos pinos digitais (incluindo 32 e 33) o firmware liga o pull-up interno e lê o nível digital, que tem histerese: cabo longo de contato seco não conta pulso falso. Os GPIO 34 a 39 não têm pull-up: ali o contato seco precisa do resistor da placa.
@@ -67,7 +67,7 @@ O firmware lê todos os pinos livres em toda coleta e envia o valor bruto de cad
 | LDR em divisor de tensão | sinal no pino analógico | o `anNN` que mudar | `0.000805860805` (3,3 / 4095) | volts |
 | Sensor 0–3,3 V linear (ex.: 0–100 %) | sinal no pino analógico | o `anNN` | `0.0244200244` (100 / 4095) | % |
 
-Pinos que o firmware não lê: 0 e 2 (boot e LED), 1 e 3 (serial), 6 a 11 (flash) e 25 (buzzer). Os GPIO 5, 12 e 15 são lidos só depois do boot.
+Pinos que o firmware não lê: 0 e 2 (boot e LED), 1 e 3 (serial), 6 a 11 (flash) e 26 (buzzer). Os GPIO 5, 12 e 15 são lidos só depois do boot.
 
 ## Buzzer (SCRUM-619)
 
@@ -75,12 +75,12 @@ O buzzer toca só falha que dura: queda curta de Wi-Fi ou sensor que perde uma c
 
 | Ligação | ESP32 |
 | --- | --- |
-| GPIO25 → 1 kΩ → base do BC547 | GPIO25 |
+| GPIO26 → 1 kΩ → base do BC547 | GPIO26 |
 | buzzer `+` | 3V3 (ou VIN, 5 V, para buzzer de 5 V) |
 | buzzer `-` → coletor do BC547 | — |
 | emissor do BC547 | GND |
 
-Buzzer pequeno de 3,3 V que puxa menos de 20 mA pode ir direto: `+` no GPIO25 e `-` no GND. Módulo de 3 pinos que apita com o I/O em nível baixo: `BUZZER_LIGA_EM_ALTO = false` em `include/pinos.h`.
+Buzzer pequeno de 3,3 V que puxa menos de 20 mA pode ir direto: `+` no GPIO26 e `-` no GND. Módulo de 3 pinos (VCC no 3V3, I/O no GPIO26, GND no GND) que apita com o I/O em nível baixo: `BUZZER_LIGA_EM_ALTO = false` em `include/pinos.h`.
 
 | Falha | Quando toca | Bipes |
 | --- | --- | --- |
@@ -89,9 +89,9 @@ Buzzer pequeno de 3,3 V que puxa menos de 20 mA pode ir direto: `+` no GPIO25 e 
 | hora | relógio sem NTP por 30 min (nada é publicado) | 4 |
 | configuração | `config.h` inválido, na inicialização | 5 |
 
-Com mais de uma falha os códigos tocam em sequência, com 1 s entre eles. O toque se repete a cada 30 min enquanto a falha durar e de novo na hora se outra falha passar dos 30 min. Quando tudo volta, um bipe longo. Os tempos ficam em `lib/coleta/src/alarme.h` (`PERSISTENCIA_MS` e `REPETICAO_MS`).
+Cada código começa com uma sirene curta ("uí-ó-uí-ó") e depois os bipes graves e lentos (800 Hz), para contar sem confundir. Com mais de uma falha os códigos tocam em sequência, com 1 s entre eles. O toque se repete a cada 30 min enquanto a falha durar e de novo na hora se outra falha passar dos 30 min. Quando tudo volta, um tom agudo longo e liso; ao ligar, uma escadinha rápida subindo. As notas saem por PWM (`BUZZER_FREQUENCIA_HZ` em `include/pinos.h`), então soam em buzzer passivo e ativo; uma tarefa no núcleo 0 toca a cada 5 ms, sem depender do loop. Os tempos ficam em `lib/coleta/src/alarme.h` (`PERSISTENCIA_MS` e `REPETICAO_MS`).
 
-Pela serial: `buzzer teste` toca os quatro códigos; `buzzer off` e `buzzer on` desligam e religam o som (grava na flash, o alarme continua no log); `status` mostra `buzzer=on|off` e `alarmes=` com as falhas confirmadas.
+Pela serial: `buzzer teste` toca os quatro códigos, `buzzer abertura` e `buzzer normalizou` tocam os outros dois sons; `buzzer off` e `buzzer on` desligam e religam o som (grava na flash, o alarme continua no log); `status` mostra `buzzer=on|off` e `alarmes=` com as falhas confirmadas.
 
 ## Registro da montagem
 

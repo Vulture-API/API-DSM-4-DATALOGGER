@@ -77,6 +77,28 @@ void amostrar(void*) {
 Alarme alarme;
 Bipador bipador;
 bool buzzerLigado = true;
+constexpr uint8_t CANAL_BUZZER = 0;  // canal LEDC do tom
+
+uint16_t buzzerNota = 0;  // frequência tocando agora (0 = mudo)
+
+// Toca a nota pedida (0 = silêncio). Com BUZZER_FREQUENCIA_HZ = 0 só liga/desliga.
+void acionarBuzzer(uint16_t nota) {
+  if (nota == buzzerNota) return;
+  buzzerNota = nota;
+  if (BUZZER_FREQUENCIA_HZ == 0) {
+    digitalWrite(PINO_BUZZER, (nota != 0) == BUZZER_LIGA_EM_ALTO ? HIGH : LOW);
+    return;
+  }
+  if (nota != 0) {
+    ledcAttachPin(PINO_BUZZER, CANAL_BUZZER);
+    ledcWriteTone(CANAL_BUZZER, nota);
+  } else {
+    ledcWriteTone(CANAL_BUZZER, 0);
+    ledcDetachPin(PINO_BUZZER);
+    pinMode(PINO_BUZZER, OUTPUT);
+    digitalWrite(PINO_BUZZER, BUZZER_LIGA_EM_ALTO ? LOW : HIGH);  // repouso: mudo
+  }
+}
 
 constexpr uint32_t ESPERA_INICIAL_MS = 20000;
 // Cabe a mensagem com MAXIMO_SENSORES campos; o pacote MQTT leva também o tópico.
@@ -130,6 +152,16 @@ size_t listarFalhas(uint8_t mascara, char* destino, size_t tamanho) {
   return n;
 }
 
+// Toca o que o bipador manda a cada 5 ms, fora do loop: a coleta e a conexão
+// MQTT seguram o loop por até alguns segundos e as melodias sairiam picotadas.
+// No núcleo 0, junto da amostragem: no 1 ela atrapalharia a leitura do DHT22.
+void tarefaBuzzer(void*) {
+  for (;;) {
+    acionarBuzzer(bipador.frequencia(millis()));
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+}
+
 // Falha curta não apita: o alarme só toca o que já dura PERSISTENCIA_MS.
 void cuidarAlarme() {
   const uint32_t agora = millis();
@@ -149,8 +181,6 @@ void cuidarAlarme() {
     escreverLog(aviso.normalizou ? "INFO" : "WARN", msg);
     if (buzzerLigado) bipador.tocar(aviso, agora);
   }
-  const bool ligar = bipador.ligado(agora);
-  digitalWrite(PINO_BUZZER, ligar == BUZZER_LIGA_EM_ALTO ? HIGH : LOW);
 }
 
 void montarListaCanais() {
@@ -398,7 +428,7 @@ void mostrarCanais() {
   if (usado) escreverLog("INFO", linha);
 }
 
-// Comandos pela serial: "intervalo <segundos>", "status", "canais" e "buzzer on|off|teste".
+// Comandos pela serial: "intervalo <segundos>", "status", "canais" e "buzzer on|off|teste|abertura|normalizou".
 void lerComando() {
   if (!Serial.available()) return;
   String linha = Serial.readStringUntil('\n');
@@ -439,7 +469,15 @@ void lerComando() {
     Aviso todos;
     for (size_t i = 0; i < QUANTIDADE_FALHAS; i++) todos.falhas |= mascaraDe(static_cast<Falha>(i));
     bipador.tocar(todos, millis());
-    escreverLog("INFO", "buzzer teste: sensor 2, conexao 3, hora 4, configuracao 5 bipes");
+    escreverLog("INFO", "buzzer teste: sirene + sensor 2, conexao 3, hora 4, configuracao 5 bipes");
+  } else if (linha == "buzzer abertura") {
+    bipador.tocarAbertura(millis());
+    escreverLog("INFO", "buzzer abertura");
+  } else if (linha == "buzzer normalizou") {
+    Aviso aviso;
+    aviso.normalizou = true;
+    bipador.tocar(aviso, millis());
+    escreverLog("INFO", "buzzer normalizou");
   }
 }
 
@@ -449,6 +487,8 @@ void setup() {
   Serial.begin(115200);
   pinMode(PINO_BUZZER, OUTPUT);
   digitalWrite(PINO_BUZZER, BUZZER_LIGA_EM_ALTO ? LOW : HIGH);
+  if (BUZZER_FREQUENCIA_HZ > 0) ledcSetup(CANAL_BUZZER, BUZZER_FREQUENCIA_HZ, 8);
+  xTaskCreatePinnedToCore(tarefaBuzzer, "buzzer", 2048, nullptr, 1, nullptr, 0);
   carregarIntervalo();
   carregarBuzzer();
 
@@ -487,6 +527,7 @@ void setup() {
   snprintf(msg, sizeof msg, "%u canais; comando \"canais\" mostra o valor de cada um",
            static_cast<unsigned>(quantidadeCanais));
   escreverLog("INFO", msg);
+  if (buzzerLigado) bipador.tocarAbertura(millis());  // avisa que a placa ligou
 }
 
 void loop() {

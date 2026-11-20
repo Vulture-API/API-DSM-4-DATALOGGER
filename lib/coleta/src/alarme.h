@@ -52,27 +52,43 @@ class Alarme {
   uint32_t ultimoToqueMs_ = 0;
 };
 
-// Toca um Aviso sem bloquear o loop: diz se o buzzer deve estar ligado agora.
-// Cada falha vira um grupo de bipes curtos; "normalizou" é um bipe longo.
+// Uma nota do buzzer: frequência (Hz) tocada por ligadoMs, depois silêncio.
+struct Nota {
+  uint16_t frequenciaHz;
+  uint16_t ligadoMs;
+  uint16_t desligadoMs;
+};
+
+// Toca um Aviso sem bloquear o loop: diz se o buzzer deve soar agora e em
+// que nota (0 = silêncio). Três sons bem diferentes entre si:
+// - abertura (placa ligou): escadinha rápida subindo;
+// - falha: sirene ("uí-ó-uí-ó") e o código em bipes graves e lentos (2 a 5);
+// - normalizou: um tom agudo longo e liso.
+// Com buzzer ativo a nota não muda, mas o ritmo continua diferente.
 class Bipador {
  public:
-  static constexpr uint32_t BIPE_MS = 150;
-  static constexpr uint32_t PAUSA_BIPE_MS = 150;
+  static constexpr uint16_t NOTA_CODIGO_HZ = 800;  // grave: só os bipes do código usam
+  static constexpr uint32_t BIPE_MS = 250;
+  static constexpr uint32_t PAUSA_BIPE_MS = 350;
+  static constexpr uint32_t PAUSA_CHAMADA_MS = 500;
   static constexpr uint32_t PAUSA_GRUPO_MS = 1000;
-  static constexpr uint32_t BIPE_NORMALIZOU_MS = 600;
 
   void tocar(const Aviso& aviso, uint32_t agoraMs);
-  bool ligado(uint32_t agoraMs) const;
+  void tocarAbertura(uint32_t agoraMs);
+  bool ligado(uint32_t agoraMs) const { return frequencia(agoraMs) != 0; }
+  uint16_t frequencia(uint32_t agoraMs) const;  // 0 = silêncio
   bool tocando(uint32_t agoraMs) const;
   uint32_t duracaoMs() const;
 
  private:
-  static constexpr size_t MAXIMO_TRECHOS = 40;
-  uint32_t trechosMs_[MAXIMO_TRECHOS] = {};  // ligado, desligado, ligado...
+  static constexpr size_t MAXIMO_NOTAS = 64;
+  Nota notas_[MAXIMO_NOTAS] = {};
   size_t quantidade_ = 0;
   uint32_t inicioMs_ = 0;
 
-  void acrescentar(uint32_t ligadoMs, uint32_t desligadoMs);
+  void comecar(uint32_t agoraMs);
+  void acrescentar(uint16_t frequenciaHz, uint16_t ligadoMs, uint16_t desligadoMs);
+  void acrescentar(const Nota* notas, size_t n);
 };
 
 }  // namespace coleta

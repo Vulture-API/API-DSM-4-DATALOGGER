@@ -41,7 +41,7 @@ Pela serial:
 - `intervalo 120` muda a frequência de coleta (10 a 3600 s) e grava na flash
 - `status` mostra MAC, quantidade de canais, pino do DHT22, intervalo, Wi-Fi, MQTT, buzzer, alarmes ativos e contadores de coleta e falha
 - `canais` mostra o valor atual de cada canal (para achar onde o sensor foi ligado)
-- `buzzer off` / `buzzer on` desliga e religa o som do alarme (grava na flash); `buzzer teste` toca todos os códigos
+- `buzzer off` / `buzzer on` desliga e religa o som do alarme (grava na flash); `buzzer teste` toca todos os códigos; `buzzer abertura` e `buzzer normalizou` tocam os sons de início e de volta ao normal
 
 ## Organização
 
