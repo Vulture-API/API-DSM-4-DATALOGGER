@@ -184,9 +184,9 @@ bool respondeComoDht(int pino) {
 }
 
 // Procura o DHT22 nos pinos digitais, começando pelo último em que foi achado.
+// A amostragem só para durante cada leitura (lerDht): com o sensor ausente a
+// varredura leva alguns segundos e um pulso nesse tempo não pode se perder.
 void detectarDht() {
-  amostragemPausada = true;
-  delay(PERIODO_AMOSTRAGEM_MS * 2);
   preferencias.begin("datalogger", true);
   int salvo = preferencias.getInt("dht_pino", PINO_DHT);
   preferencias.end();
@@ -218,7 +218,6 @@ void detectarDht() {
     }
     escreverLog(achado >= 0 ? "INFO" : "WARN", msg);
   }
-  amostragemPausada = false;
 }
 
 bool salvarIntervalo(uint32_t segundos) {
