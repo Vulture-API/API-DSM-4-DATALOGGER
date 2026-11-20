@@ -13,12 +13,15 @@
 //   temp/umid  DHT22, procurado em PINOS_DIGITAIS (começa por PINO_DHT)
 // Canal sem sensor cadastrado é ignorado pelo tratamento.
 //
-// Analógicos: só o ADC1 (GPIO 32 a 39) lê com o Wi-Fi ligado. 34 a 39 não têm
-// pull-up interno: contato seco nesses pinos precisa do resistor da placa.
+// Analógicos: só o ADC1 (GPIO 32 a 39) lê com o Wi-Fi ligado. 32 e 33 ficam
+// com pull-up interno (pino solto pega ruído da rede e conta pulso falso); 34
+// a 39 não têm pull-up: contato seco ali precisa do resistor da placa.
 constexpr int PINOS_ANALOGICOS[] = {32, 33, 34, 35, 36, 39};
-// Digitais com pull-up interno. Ficam fora os de boot (0, 2, 5, 12, 15), a
-// serial (1, 3), a flash (6 a 11) e o buzzer.
-constexpr int PINOS_DIGITAIS[] = {PINO_DHT, 13, 14, 16, 17, 18, 19, 21, 22, 23, 26, 27};
+constexpr int PINOS_ANALOGICOS_COM_PULL_UP[] = {32, 33};
+// Digitais com pull-up interno. 5, 12 e 15 só são lidos depois do boot (o
+// pull-up volta ao padrão no reset). Ficam fora 0 e 2 (boot e LED), a serial
+// (1, 3), a flash (6 a 11) e o buzzer.
+constexpr int PINOS_DIGITAIS[] = {PINO_DHT, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 26, 27};
 
 constexpr size_t QUANTIDADE_ANALOGICOS = sizeof(PINOS_ANALOGICOS) / sizeof(PINOS_ANALOGICOS[0]);
 constexpr size_t QUANTIDADE_DIGITAIS = sizeof(PINOS_DIGITAIS) / sizeof(PINOS_DIGITAIS[0]);

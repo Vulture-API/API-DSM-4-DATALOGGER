@@ -27,7 +27,7 @@ struct Medida {
   bool ok;
 };
 
-constexpr size_t MAXIMO_SENSORES = 26;
+constexpr size_t MAXIMO_SENSORES = 30;
 
 // Só letras, números, "_" e "-": o identificador vai entre aspas no JSON.
 bool identificadorValido(const char* identificador);

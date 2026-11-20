@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <DHT.h>
+#include <driver/gpio.h>
 #include <Preferences.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
@@ -77,8 +78,8 @@ bool buzzerLigado = true;
 
 constexpr uint32_t ESPERA_INICIAL_MS = 20000;
 // Cabe a mensagem com MAXIMO_SENSORES campos; o pacote MQTT leva também o tópico.
-constexpr size_t TAMANHO_PAYLOAD = 640;
-constexpr uint16_t TAMANHO_PACOTE_MQTT = 768;
+constexpr size_t TAMANHO_PAYLOAD = 768;
+constexpr uint16_t TAMANHO_PACOTE_MQTT = 1024;
 
 uint32_t tentativasMqtt = 0;
 uint32_t proximaTentativaMs = 0;
@@ -398,6 +399,10 @@ void setup() {
   carregarBuzzer();
 
   for (int pino : PINOS_DIGITAIS) pinMode(pino, INPUT_PULLUP);
+  // A primeira leitura liga o pino ao ADC e desliga os resistores; o pull-up
+  // é religado depois dela.
+  for (int pino : PINOS_ANALOGICOS) analogRead(pino);
+  for (int pino : PINOS_ANALOGICOS_COM_PULL_UP) gpio_pullup_en(static_cast<gpio_num_t>(pino));
   montarListaCanais();
 
   conectarWifi();
