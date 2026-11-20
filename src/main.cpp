@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <DHT.h>
-#include <driver/gpio.h>
 #include <Preferences.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
@@ -399,10 +398,6 @@ void setup() {
   carregarBuzzer();
 
   for (int pino : PINOS_DIGITAIS) pinMode(pino, INPUT_PULLUP);
-  // A primeira leitura liga o pino ao ADC e desliga os resistores; o pull-up
-  // é religado depois dela.
-  for (int pino : PINOS_ANALOGICOS) analogRead(pino);
-  for (int pino : PINOS_ANALOGICOS_COM_PULL_UP) gpio_pullup_en(static_cast<gpio_num_t>(pino));
   montarListaCanais();
 
   conectarWifi();

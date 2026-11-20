@@ -45,11 +45,11 @@ O firmware lê todos os pinos livres em toda coleta e envia o valor bruto de cad
 | Canal | O que é | Pinos | Valor enviado |
 | --- | --- | --- | --- |
 | `temp`, `umid` | DHT22, procurado sozinho nos pinos digitais | o primeiro que responder (começa pelo GPIO4) | °C e % |
-| `anNN` | tensão no pino (ADC de 12 bits) | 32, 33, 34, 35, 36, 39 | 0 a 4095 (0 a 3,3 V) |
-| `puNN` | pulsos (contato fechando) desde o último envio | 32, 33, 34, 35, 36, 39 e 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 26, 27 | inteiro |
+| `anNN` | tensão no pino (ADC de 12 bits) | 34, 35, 36, 39 | 0 a 4095 (0 a 3,3 V) |
+| `puNN` | pulsos (contato fechando) desde o último envio | 34, 35, 36, 39 e 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 26, 27, 32, 33 | inteiro |
 
 - Os pulsos são contados por amostragem a cada 5 ms, então qualquer um desses pinos serve, inclusive 34 a 39. Nível que não se repete em duas amostras seguidas (quique do reed) não conta.
-- Nos pinos digitais e nos GPIO 32 e 33 o firmware liga o pull-up interno (pino solto pega ruído da rede elétrica e conta pulso falso). Por isso, sensor analógico de alta impedância fica melhor nos GPIO 34 a 39. Esses não têm pull-up: ali o contato seco precisa do resistor da placa.
+- Nos pinos digitais (incluindo 32 e 33) o firmware liga o pull-up interno e lê o nível digital, que tem histerese: cabo longo de contato seco não conta pulso falso. Os GPIO 34 a 39 não têm pull-up: ali o contato seco precisa do resistor da placa.
 - Pino analógico também conta pulsos: abaixo de 1/3 da escala é contato fechado, acima de 2/3 é aberto.
 - Os pulsos só saem da contagem depois de publicados: com o Wi-Fi ou o MQTT fora do ar, o acumulado vai no próximo envio.
 - O DHT22 é procurado ao ligar, a cada 10 coletas sem ele e depois de 3 coletas sem resposta. O pino achado fica gravado e sai da lista de pulsos.

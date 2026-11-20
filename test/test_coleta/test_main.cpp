@@ -580,7 +580,7 @@ int procurar(size_t n, const char* id) {
 
 void test_canais_da_placa_com_dht22_no_gpio4() {
   const size_t n = montarDaPlaca(4);
-  TEST_ASSERT_EQUAL(2 + 6 + 6 + 14, static_cast<int>(n));
+  TEST_ASSERT_EQUAL(2 + 4 + 4 + 16, static_cast<int>(n));
   TEST_ASSERT_EQUAL_STRING("temp", canais[0].identificador);
   TEST_ASSERT_EQUAL_STRING("umid", canais[1].identificador);
   TEST_ASSERT_EQUAL(4, canais[0].pino);
@@ -589,6 +589,8 @@ void test_canais_da_placa_com_dht22_no_gpio4() {
   TEST_ASSERT_TRUE(procurar(n, "pu26") >= 0);
   TEST_ASSERT_EQUAL(-1, procurar(n, "pu4"));
   TEST_ASSERT_EQUAL(-1, procurar(n, "an26"));
+  TEST_ASSERT_EQUAL(-1, procurar(n, "an32"));
+  TEST_ASSERT_TRUE(procurar(n, "pu32") >= 0);
   TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(canais, n)));
 }
 
@@ -602,7 +604,7 @@ void test_dht22_em_outro_pino_libera_o_gpio4_para_pulsos() {
 
 void test_sem_dht22_nao_ha_temperatura_nem_umidade() {
   const size_t n = montarDaPlaca(-1);
-  TEST_ASSERT_EQUAL(6 + 6 + 15, static_cast<int>(n));
+  TEST_ASSERT_EQUAL(4 + 4 + 17, static_cast<int>(n));
   TEST_ASSERT_EQUAL(-1, procurar(n, "temp"));
   TEST_ASSERT_EQUAL(-1, procurar(n, "umid"));
   TEST_ASSERT_TRUE(procurar(n, "pu4") >= 0);
@@ -615,7 +617,7 @@ void test_canais_nao_passam_do_maximo() {
   const size_t n = montarCanais(4, PINOS_ANALOGICOS, QUANTIDADE_ANALOGICOS, PINOS_DIGITAIS, QUANTIDADE_DIGITAIS,
                                 poucos, nomesPoucos, 3);
   TEST_ASSERT_EQUAL(3, static_cast<int>(n));
-  TEST_ASSERT_EQUAL_STRING("an32", poucos[2].identificador);
+  TEST_ASSERT_EQUAL_STRING("an34", poucos[2].identificador);
 }
 
 void test_buzzer_fora_dos_pinos_lidos() {
