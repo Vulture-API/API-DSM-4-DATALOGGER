@@ -37,7 +37,7 @@ jobs:
     steps:
       - name: Conferir se o conteúdo já foi testado no PR
         id: conferir
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const sha = context.sha;
@@ -92,16 +92,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Cache do PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.platformio
@@ -141,7 +141,7 @@ jobs:
 
       - name: Relatórios
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: datalogger-ci
           path: |
