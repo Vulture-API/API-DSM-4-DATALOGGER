@@ -1,0 +1,151 @@
+# Pipeline do firmware do datalogger (ESP32 + PlatformIO).
+#
+# Testes da lógica pura no computador (env native, Unity) e compilação do
+# firmware para a placa (env esp32dev). Sem placa e sem credenciais: o
+# secrets.h do build vem do secrets.example.h.
+name: CI
+
+# A suíte completa roda no PR para a dev: é a pipeline da feature. No push da
+# dev, o job de procedência confere que entrou o mesmo conteúdo testado no PR e,
+# confirmado, não repete a suíte; sem prova, roda tudo.
+on:
+  pull_request:
+    branches: [dev]
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  procedencia:
+    name: Procedência do commit na dev
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      testado: ${{ steps.conferir.outputs.testado }}
+    steps:
+      - name: Conferir se o conteúdo já foi testado no PR
+        id: conferir
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const sha = context.sha;
+            const roda = (motivo) => {
+              core.notice(`Suíte completa nesta execução: ${motivo}.`);
+              core.setOutput('testado', 'false');
+            };
+            try {
+              const { data: commit } = await github.rest.repos.getCommit({ ...context.repo, ref: sha });
+              if (commit.parents.length !== 2) return roda('o commit não é o merge de um PR');
+              const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({ ...context.repo, commit_sha: sha });
+              const pr = prs.find((p) => p.merged_at && p.merge_commit_sha === sha);
+              if (!pr) return roda('nenhum PR mesclado gerou este commit');
+              const head = pr.head.sha;
+              const [{ data: merge }, { data: testado }] = await Promise.all([
+                github.rest.git.getCommit({ ...context.repo, commit_sha: sha }),
+                github.rest.git.getCommit({ ...context.repo, commit_sha: head }),
+              ]);
+              if (merge.tree.sha !== testado.tree.sha) return roda(`o conteúdo da dev difere do commit testado no PR #${pr.number}`);
+              const { data: comparacao } = await github.rest.repos.compareCommitsWithBasehead({
+                ...context.repo,
+                basehead: `${commit.parents[0].sha}...${head}`,
+              });
+              if (!['ahead', 'identical'].includes(comparacao.status)) return roda(`o PR #${pr.number} não estava atualizado com a dev`);
+              const workflow = process.env.GITHUB_WORKFLOW_REF.split('@')[0].split('/').pop();
+              const { data: runs } = await github.rest.actions.listWorkflowRuns({
+                ...context.repo,
+                workflow_id: workflow,
+                head_sha: head,
+                event: 'pull_request',
+                status: 'success',
+                per_page: 1,
+              });
+              const run = runs.workflow_runs[0];
+              if (!run) return roda(`não há CI verde no commit ${head.slice(0, 7)} do PR #${pr.number}`);
+              core.setOutput('testado', 'true');
+              await core.summary
+                .addHeading('Procedência confirmada', 3)
+                .addRaw(`O commit ${sha.slice(0, 7)} da dev tem o mesmo conteúdo do commit ${head.slice(0, 7)}, testado no PR #${pr.number}. `)
+                .addRaw('A suíte do repositório não roda de novo.')
+                .addBreak()
+                .addLink('Execução que testou este conteúdo', run.html_url)
+                .write();
+            } catch (erro) {
+              roda(`não foi possível conferir (${erro.message})`);
+            }
+
+  firmware:
+    needs: procedencia
+    if: ${{ !cancelled() && needs.procedencia.outputs.testado != 'true' }}
+    name: Testes nativos e build do firmware
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Cache do PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Instalar PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Testes da lógica (env native)
+        run: |
+          mkdir -p reports
+          pio test -e native --junit-output-path reports/junit-native.xml
+
+      - name: Nenhum teste pulado ou ignorado
+        run: |
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("reports/junit-native.xml").getroot()
+          cases = list(root.iter("testcase"))
+          skipped = [c.get("name") for c in cases if c.find("skipped") is not None]
+          print(f"Testes nativos: {len(cases)}, pulados: {len(skipped)}")
+          if not cases or skipped:
+              print(f"::error::Testes ausentes ou pulados: {skipped}")
+              sys.exit(1)
+          PY
+
+      - name: Build do firmware (env esp32dev)
+        run: |
+          cp include/secrets.example.h include/secrets.h
+          pio run -e esp32dev
+          echo "### Firmware" >> "$GITHUB_STEP_SUMMARY"
+          pio run -e esp32dev -t size 2>/dev/null | grep -E "^(RAM|Flash):" | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Relatórios
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: datalogger-ci
+          path: |
+            reports/
+            .pio/build/esp32dev/firmware.bin
+          retention-days: 30
+          if-no-files-found: ignore
