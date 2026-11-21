@@ -1,12 +1,18 @@
 #include <unity.h>
 
+#include <cstdio>
 #include <cstring>
 #include <initializer_list>
 #include <limits>
 
+#include "alarme.h"
+#include "canais.h"
+#include "fila.h"
+#include "config.h"
 #include "intervalo.h"
 #include "leitura.h"
 #include "payload.h"
+#include "pulsos.h"
 #include "status.h"
 
 using namespace coleta;
@@ -236,6 +242,598 @@ void test_espera_de_reconexao_cresce_ate_60_segundos() {
   TEST_ASSERT_EQUAL_UINT32(60000, atrasoReconexaoMs(1000));
 }
 
+// SCRUM-603: sensores configuráveis
+
+const Sensor DHT_TEMP{"temp", Fonte::Dht22Temperatura, 4};
+const Sensor DHT_UMID{"umid", Fonte::Dht22Umidade, 4};
+const Sensor LUX{"lux", Fonte::Analogico, 34};
+const Sensor PORTA{"porta", Fonte::Digital, 27};
+
+void test_configuracao_so_com_dht22_e_valida() {
+  const Sensor sensores[] = {DHT_TEMP, DHT_UMID};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(sensores, 2)));
+}
+
+void test_configuracao_aceita_sensores_adicionais() {
+  const Sensor sensores[] = {DHT_TEMP, DHT_UMID, LUX, PORTA};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(sensores, 4)));
+}
+
+void test_configuracao_vazia_ou_grande_demais_e_recusada() {
+  Sensor muitos[MAXIMO_SENSORES + 1];
+  for (size_t i = 0; i <= MAXIMO_SENSORES; i++) muitos[i] = Sensor{"canal", Fonte::Pulsos, 26};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::SemSensores), static_cast<int>(validarConfiguracao(muitos, 0)));
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::SemSensores), static_cast<int>(validarConfiguracao(nullptr, 2)));
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::SensoresDemais),
+                    static_cast<int>(validarConfiguracao(muitos, MAXIMO_SENSORES + 1)));
+}
+
+void test_identificador_invalido_na_configuracao_e_recusado() {
+  for (const char* id : {"", "com espaco", "aspas\"", "acentuação"}) {
+    const Sensor sensores[] = {DHT_TEMP, Sensor{id, Fonte::Digital, 27}};
+    TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::IdentificadorInvalido),
+                      static_cast<int>(validarConfiguracao(sensores, 2)));
+  }
+  const Sensor semNome[] = {Sensor{nullptr, Fonte::Digital, 27}};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::IdentificadorInvalido),
+                    static_cast<int>(validarConfiguracao(semNome, 1)));
+}
+
+void test_identificador_repetido_ou_reservado_e_recusado() {
+  const Sensor repetido[] = {DHT_TEMP, Sensor{"TEMP", Fonte::Analogico, 34}};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::IdentificadorRepetido),
+                    static_cast<int>(validarConfiguracao(repetido, 2)));
+  for (const char* id : {"estacao_id", "unix_time", "Unix_Time"}) {
+    const Sensor reservado[] = {Sensor{id, Fonte::Digital, 27}};
+    TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::IdentificadorReservado),
+                      static_cast<int>(validarConfiguracao(reservado, 1)));
+  }
+}
+
+void test_entrada_analogica_so_nos_pinos_que_funcionam_com_wifi() {
+  for (int pino : {32, 34, 36, 39}) {
+    const Sensor sensores[] = {Sensor{"lux", Fonte::Analogico, pino}};
+    TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(sensores, 1)));
+  }
+  for (int pino : {4, 25, 31, 40}) {
+    const Sensor sensores[] = {Sensor{"lux", Fonte::Analogico, pino}};
+    TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::PinoAnalogicoInvalido),
+                      static_cast<int>(validarConfiguracao(sensores, 1)));
+  }
+  const Sensor digital[] = {Sensor{"porta", Fonte::Digital, 4}};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(digital, 1)));
+}
+
+void test_faixa_valida_depende_da_fonte() {
+  TEST_ASSERT_TRUE(valorValido(Fonte::Dht22Temperatura, -40.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Dht22Temperatura, 80.1f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Dht22Umidade, 100.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Dht22Umidade, -0.1f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Analogico, 0.0f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Analogico, 4095.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Analogico, 4096.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Analogico, -1.0f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Digital, 0.0f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Digital, 1.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Digital, 0.5f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Analogico, NAN_F));
+}
+
+void test_medida_guarda_o_identificador_e_o_valor_bruto() {
+  const Medida boa = avaliarMedida(LUX, 2048.0f);
+  TEST_ASSERT_TRUE(boa.ok);
+  TEST_ASSERT_EQUAL_STRING("lux", boa.identificador);
+  TEST_ASSERT_EQUAL_FLOAT(2048.0f, boa.valor);
+  const Medida ruim = avaliarMedida(DHT_TEMP, NAN_F);
+  TEST_ASSERT_FALSE(ruim.ok);
+  TEST_ASSERT_EQUAL_STRING("temp", ruim.identificador);
+}
+
+void test_payload_com_varios_sensores_tem_um_campo_por_sensor() {
+  const Medida medidas[] = {avaliarMedida(DHT_TEMP, 23.456f), avaliarMedida(DHT_UMID, 61.0f),
+                            avaliarMedida(LUX, 2048.0f), avaliarMedida(PORTA, 1.0f)};
+  char buffer[320];
+  const Rejeicao motivo = montarPayload(MAC, AGORA, medidas, 4, buffer, sizeof buffer);
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::Nenhuma), static_cast<int>(motivo));
+  TEST_ASSERT_EQUAL_STRING(
+      "{\"estacao_id\":\"24:6F:28:AB:CD:EF\",\"unix_time\":1794100000,"
+      "\"temp\":23.46,\"umid\":61.00,\"lux\":2048.00,\"porta\":1.00}",
+      buffer);
+}
+
+void test_falha_de_um_sensor_nao_impede_o_envio_dos_demais() {
+  const Medida medidas[] = {avaliarMedida(DHT_TEMP, NAN_F), avaliarMedida(DHT_UMID, NAN_F),
+                            avaliarMedida(LUX, 300.0f)};
+  char buffer[320];
+  TEST_ASSERT_EQUAL(1, static_cast<int>(contarValidas(medidas, 3)));
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::Nenhuma),
+                    static_cast<int>(montarPayload(MAC, AGORA, medidas, 3, buffer, sizeof buffer)));
+  TEST_ASSERT_EQUAL_STRING("{\"estacao_id\":\"24:6F:28:AB:CD:EF\",\"unix_time\":1794100000,\"lux\":300.00}", buffer);
+}
+
+void test_nenhuma_medida_valida_nao_monta_payload() {
+  const Medida medidas[] = {avaliarMedida(DHT_TEMP, NAN_F), avaliarMedida(LUX, 5000.0f)};
+  char buffer[320] = "intacto";
+  TEST_ASSERT_EQUAL(0, static_cast<int>(contarValidas(medidas, 2)));
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::SemLeituraValida),
+                    static_cast<int>(montarPayload(MAC, AGORA, medidas, 2, buffer, sizeof buffer)));
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::SemLeituraValida),
+                    static_cast<int>(montarPayload(MAC, AGORA, nullptr, 0, buffer, sizeof buffer)));
+}
+
+void test_payload_com_o_maximo_de_sensores_cabe_no_buffer_do_firmware() {
+  char nomes[MAXIMO_SENSORES][TAMANHO_NOME_CANAL];
+  Medida medidas[MAXIMO_SENSORES];
+  for (size_t i = 0; i < MAXIMO_SENSORES; i++) {
+    std::snprintf(nomes[i], sizeof nomes[i], "canal%02u", static_cast<unsigned>(i));
+    medidas[i] = Medida{nomes[i], 100000.0f, true};
+  }
+  char buffer[768];
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::Nenhuma),
+                    static_cast<int>(montarPayload(MAC, AGORA, medidas, MAXIMO_SENSORES, buffer, sizeof buffer)));
+  TEST_ASSERT_TRUE(std::strlen(buffer) < 768);
+  char pequeno[64];
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::BufferPequeno),
+                    static_cast<int>(montarPayload(MAC, AGORA, medidas, MAXIMO_SENSORES, pequeno, sizeof pequeno)));
+  TEST_ASSERT_EQUAL_STRING("", pequeno);
+}
+
+void test_estacao_so_com_dht22_gera_o_mesmo_payload_de_antes() {
+  char antigo[160];
+  char novo[160];
+  montarPayload(MAC, AGORA, avaliarLeitura(23.456f, 61.0f), Identificadores{}, antigo, sizeof antigo);
+  const Medida medidas[] = {avaliarMedida(DHT_TEMP, 23.456f), avaliarMedida(DHT_UMID, 61.0f)};
+  montarPayload(MAC, AGORA, medidas, 2, novo, sizeof novo);
+  TEST_ASSERT_EQUAL_STRING(antigo, novo);
+}
+
+// Buzzer: alarme só para falha que persiste
+
+namespace {
+const uint32_t MINUTO = 60UL * 1000UL;
+}  // namespace
+
+void test_falha_curta_nao_toca() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Conexao, true, 0);
+  TEST_ASSERT_TRUE(alarme.verificar(29 * MINUTO).vazio());
+  alarme.atualizar(Falha::Conexao, false, 29 * MINUTO);
+  TEST_ASSERT_TRUE(alarme.verificar(31 * MINUTO).vazio());
+}
+
+void test_falha_persistente_toca_depois_de_30_minutos() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Sensor, true, 0);
+  TEST_ASSERT_TRUE(alarme.verificar(PERSISTENCIA_MS - 1).vazio());
+  const Aviso aviso = alarme.verificar(PERSISTENCIA_MS);
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Sensor), aviso.falhas);
+  TEST_ASSERT_FALSE(aviso.normalizou);
+}
+
+void test_falha_que_volta_reinicia_a_contagem() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Hora, true, 0);
+  alarme.atualizar(Falha::Hora, false, 20 * MINUTO);
+  alarme.atualizar(Falha::Hora, true, 25 * MINUTO);
+  TEST_ASSERT_TRUE(alarme.verificar(40 * MINUTO).vazio());
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Hora), alarme.verificar(55 * MINUTO).falhas);
+}
+
+void test_alarme_repete_a_cada_30_minutos_enquanto_durar() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Conexao, true, 0);
+  TEST_ASSERT_FALSE(alarme.verificar(30 * MINUTO).vazio());
+  TEST_ASSERT_TRUE(alarme.verificar(31 * MINUTO).vazio());
+  TEST_ASSERT_TRUE(alarme.verificar(59 * MINUTO).vazio());
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Conexao), alarme.verificar(60 * MINUTO).falhas);
+}
+
+void test_configuracao_invalida_toca_na_hora() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Configuracao, true, 1000);
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Configuracao), alarme.verificar(1000).falhas);
+}
+
+void test_nova_falha_durante_o_alarme_toca_na_hora_com_as_duas() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Sensor, true, 0);
+  alarme.atualizar(Falha::Conexao, true, 10 * MINUTO);
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Sensor), alarme.verificar(30 * MINUTO).falhas);
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Sensor) | mascaraDe(Falha::Conexao), alarme.verificar(40 * MINUTO).falhas);
+}
+
+void test_avisa_uma_vez_quando_normaliza() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Sensor, true, 0);
+  alarme.verificar(30 * MINUTO);
+  alarme.atualizar(Falha::Sensor, false, 35 * MINUTO);
+  const Aviso aviso = alarme.verificar(35 * MINUTO);
+  TEST_ASSERT_TRUE(aviso.normalizou);
+  TEST_ASSERT_EQUAL_UINT8(0, aviso.falhas);
+  TEST_ASSERT_TRUE(alarme.verificar(36 * MINUTO).vazio());
+}
+
+void test_falha_que_nao_chegou_a_tocar_nao_avisa_normalizacao() {
+  Alarme alarme;
+  alarme.atualizar(Falha::Sensor, true, 0);
+  alarme.verificar(10 * MINUTO);
+  alarme.atualizar(Falha::Sensor, false, 11 * MINUTO);
+  TEST_ASSERT_TRUE(alarme.verificar(11 * MINUTO).vazio());
+}
+
+void test_alarme_continua_certo_quando_millis_da_a_volta() {
+  Alarme alarme;
+  const uint32_t inicio = 0xFFFFFFFFUL - 5 * MINUTO;
+  alarme.atualizar(Falha::Conexao, true, inicio);
+  TEST_ASSERT_TRUE(alarme.verificar(inicio + 29 * MINUTO).vazio());
+  TEST_ASSERT_EQUAL_UINT8(mascaraDe(Falha::Conexao), alarme.verificar(inicio + 30 * MINUTO).falhas);
+}
+
+void test_cada_falha_tem_um_codigo_de_bipes() {
+  TEST_ASSERT_EQUAL_UINT8(2, bipesDe(Falha::Sensor));
+  TEST_ASSERT_EQUAL_UINT8(3, bipesDe(Falha::Conexao));
+  TEST_ASSERT_EQUAL_UINT8(4, bipesDe(Falha::Hora));
+  TEST_ASSERT_EQUAL_UINT8(5, bipesDe(Falha::Configuracao));
+}
+
+namespace {
+// Conta os toques do bipador: os bipes do código (nota própria) e o resto.
+struct Contagem {
+  int notas = 0;
+  int bipes = 0;
+};
+
+Contagem contar(const Bipador& bipador, uint32_t inicio = 0) {
+  Contagem c;
+  uint16_t anterior = 0;
+  for (uint32_t t = inicio; t <= inicio + bipador.duracaoMs(); t++) {
+    const uint16_t f = bipador.frequencia(t);
+    if (f != 0 && anterior == 0) (f == Bipador::NOTA_CODIGO_HZ ? c.bipes : c.notas)++;
+    anterior = f;
+  }
+  return c;
+}
+}  // namespace
+
+void test_bipador_toca_o_codigo_sem_bloquear() {
+  Bipador bipador;
+  Aviso aviso;
+  aviso.falhas = mascaraDe(Falha::Sensor);
+  bipador.tocar(aviso, 1000);
+  TEST_ASSERT_TRUE(bipador.ligado(1000));
+  TEST_ASSERT_TRUE(bipador.frequencia(1000) != Bipador::NOTA_CODIGO_HZ);  // começa pela chamada
+  const Contagem c = contar(bipador, 1000);
+  TEST_ASSERT_EQUAL_INT(2, c.bipes);
+  TEST_ASSERT_TRUE(c.notas > 0);
+  const uint32_t fim = 1000 + bipador.duracaoMs();
+  TEST_ASSERT_TRUE(bipador.tocando(fim - 1));
+  TEST_ASSERT_FALSE(bipador.tocando(fim));
+  TEST_ASSERT_FALSE(bipador.ligado(fim));
+  TEST_ASSERT_FALSE(bipador.ligado(fim - Bipador::PAUSA_GRUPO_MS));  // pausa depois do código
+}
+
+void test_bipador_normalizou_sem_bipes_de_codigo() {
+  Bipador bipador;
+  Aviso aviso;
+  aviso.normalizou = true;
+  bipador.tocar(aviso, 0);
+  const Contagem c = contar(bipador);
+  TEST_ASSERT_EQUAL_INT(0, c.bipes);
+  TEST_ASSERT_EQUAL_INT(1, c.notas);
+  TEST_ASSERT_FALSE(bipador.tocando(bipador.duracaoMs()));
+}
+
+void test_bipador_abertura_e_curta() {
+  Bipador bipador;
+  bipador.tocarAbertura(500);
+  const Contagem c = contar(bipador, 500);
+  TEST_ASSERT_EQUAL_INT(0, c.bipes);
+  TEST_ASSERT_EQUAL_INT(4, c.notas);
+  TEST_ASSERT_TRUE(bipador.duracaoMs() < 1000);
+  TEST_ASSERT_FALSE(bipador.tocando(500 + bipador.duracaoMs()));
+}
+
+void test_bipador_parado_fica_desligado() {
+  Bipador bipador;
+  TEST_ASSERT_FALSE(bipador.ligado(0));
+  TEST_ASSERT_EQUAL_UINT16(0, bipador.frequencia(0));
+  TEST_ASSERT_FALSE(bipador.tocando(12345));
+}
+
+void test_bipador_com_todas_as_falhas_toca_os_14_bipes() {
+  Bipador bipador;
+  Aviso aviso;
+  for (size_t i = 0; i < QUANTIDADE_FALHAS; i++) aviso.falhas |= mascaraDe(static_cast<Falha>(i));
+  bipador.tocar(aviso, 0);
+  const Contagem c = contar(bipador);
+  TEST_ASSERT_EQUAL_INT(14, c.bipes);
+  TEST_ASSERT_EQUAL_INT(QUANTIDADE_FALHAS, c.notas);  // uma sirene (som contínuo) por falha
+}
+
+// SCRUM-621: todos os pinos lidos, pulsos por amostragem
+
+void test_pulsos_aceita_inteiro_nao_negativo_e_recusa_o_resto() {
+  TEST_ASSERT_TRUE(valorValido(Fonte::Pulsos, 0.0f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Pulsos, 37.0f));
+  TEST_ASSERT_TRUE(valorValido(Fonte::Pulsos, PULSOS_MAX));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Pulsos, -1.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Pulsos, 2.5f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Pulsos, PULSOS_MAX + 1.0f));
+  TEST_ASSERT_FALSE(valorValido(Fonte::Pulsos, NAN_F));
+}
+
+void test_pulsos_em_qualquer_pino_de_entrada_e_digital_so_com_pull_up() {
+  for (int pino : {4, 13, 26, 27, 32, 34, 35, 36, 39}) {
+    const Sensor s[] = {Sensor{"canal", Fonte::Pulsos, pino}};
+    TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(s, 1)));
+  }
+  for (int pino : {-1, 6, 11, 28, 40}) {
+    const Sensor s[] = {Sensor{"canal", Fonte::Pulsos, pino}};
+    TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::PinoSemPullUp), static_cast<int>(validarConfiguracao(s, 1)));
+  }
+  for (int pino : {34, 39}) {
+    const Sensor s[] = {Sensor{"canal", Fonte::Digital, pino}};
+    TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::PinoSemPullUp), static_cast<int>(validarConfiguracao(s, 1)));
+  }
+}
+
+void test_pino_compartilhado_so_entre_dht22_e_entre_valor_e_pulsos() {
+  const Sensor dht[] = {DHT_TEMP, DHT_UMID};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(dht, 2)));
+  const Sensor analogico[] = {Sensor{"an34", Fonte::Analogico, 34}, Sensor{"pu34", Fonte::Pulsos, 34}};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(analogico, 2)));
+  const Sensor repetido[] = {Sensor{"pu26", Fonte::Pulsos, 26}, Sensor{"di26", Fonte::Digital, 26}};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::PinoRepetido), static_cast<int>(validarConfiguracao(repetido, 2)));
+  const Sensor comDht[] = {DHT_TEMP, Sensor{"pu4", Fonte::Pulsos, 4}};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::PinoRepetido), static_cast<int>(validarConfiguracao(comDht, 2)));
+  const Sensor duasTemperaturas[] = {DHT_TEMP, Sensor{"temp2", Fonte::Dht22Temperatura, 4}};
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::PinoRepetido),
+                    static_cast<int>(validarConfiguracao(duasTemperaturas, 2)));
+}
+
+namespace {
+Sensor canais[MAXIMO_SENSORES];
+char nomes[MAXIMO_SENSORES][TAMANHO_NOME_CANAL];
+
+size_t montarDaPlaca(int pinoDht) {
+  return montarCanais(pinoDht, PINOS_ANALOGICOS, QUANTIDADE_ANALOGICOS, PINOS_DIGITAIS, QUANTIDADE_DIGITAIS, canais,
+                      nomes, MAXIMO_SENSORES);
+}
+
+int procurar(size_t n, const char* id) {
+  for (size_t i = 0; i < n; i++) {
+    if (std::strcmp(canais[i].identificador, id) == 0) return static_cast<int>(i);
+  }
+  return -1;
+}
+}  // namespace
+
+void test_canais_da_placa_com_dht22_no_gpio4() {
+  const size_t n = montarDaPlaca(4);
+  TEST_ASSERT_EQUAL(2 + 4 + 4 + 16, static_cast<int>(n));
+  TEST_ASSERT_EQUAL_STRING("temp", canais[0].identificador);
+  TEST_ASSERT_EQUAL_STRING("umid", canais[1].identificador);
+  TEST_ASSERT_EQUAL(4, canais[0].pino);
+  TEST_ASSERT_TRUE(procurar(n, "an34") >= 0);
+  TEST_ASSERT_TRUE(procurar(n, "pu34") >= 0);
+  TEST_ASSERT_TRUE(procurar(n, "pu27") >= 0);
+  TEST_ASSERT_EQUAL(-1, procurar(n, "pu4"));
+  TEST_ASSERT_EQUAL(-1, procurar(n, "an26"));
+  TEST_ASSERT_EQUAL(-1, procurar(n, "an32"));
+  TEST_ASSERT_TRUE(procurar(n, "pu32") >= 0);
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(canais, n)));
+}
+
+void test_dht22_em_outro_pino_libera_o_gpio4_para_pulsos() {
+  const size_t n = montarDaPlaca(27);
+  TEST_ASSERT_EQUAL(27, canais[0].pino);
+  TEST_ASSERT_TRUE(procurar(n, "pu4") >= 0);
+  TEST_ASSERT_EQUAL(-1, procurar(n, "pu27"));
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(canais, n)));
+}
+
+void test_sem_dht22_nao_ha_temperatura_nem_umidade() {
+  const size_t n = montarDaPlaca(-1);
+  TEST_ASSERT_EQUAL(4 + 4 + 17, static_cast<int>(n));
+  TEST_ASSERT_EQUAL(-1, procurar(n, "temp"));
+  TEST_ASSERT_EQUAL(-1, procurar(n, "umid"));
+  TEST_ASSERT_TRUE(procurar(n, "pu4") >= 0);
+  TEST_ASSERT_EQUAL(static_cast<int>(ErroConfiguracao::Nenhum), static_cast<int>(validarConfiguracao(canais, n)));
+}
+
+void test_canais_nao_passam_do_maximo() {
+  Sensor poucos[3];
+  char nomesPoucos[3][TAMANHO_NOME_CANAL];
+  const size_t n = montarCanais(4, PINOS_ANALOGICOS, QUANTIDADE_ANALOGICOS, PINOS_DIGITAIS, QUANTIDADE_DIGITAIS,
+                                poucos, nomesPoucos, 3);
+  TEST_ASSERT_EQUAL(3, static_cast<int>(n));
+  TEST_ASSERT_EQUAL_STRING("an34", poucos[2].identificador);
+}
+
+void test_dht22_so_e_procurado_em_pino_digital_lido() {
+  TEST_ASSERT_TRUE(contemPino(PINOS_DIGITAIS, QUANTIDADE_DIGITAIS, PINO_DHT));
+  TEST_ASSERT_TRUE(contemPino(PINOS_DIGITAIS, QUANTIDADE_DIGITAIS, 32));
+  TEST_ASSERT_FALSE(contemPino(PINOS_DIGITAIS, QUANTIDADE_DIGITAIS, 34));
+  TEST_ASSERT_FALSE(contemPino(PINOS_DIGITAIS, QUANTIDADE_DIGITAIS, PINO_BUZZER));
+  TEST_ASSERT_FALSE(contemPino(PINOS_DIGITAIS, 0, PINO_DHT));
+}
+
+void test_buzzer_fora_dos_pinos_lidos() {
+  TEST_ASSERT_TRUE(semBuzzer(PINOS_ANALOGICOS, QUANTIDADE_ANALOGICOS));
+  TEST_ASSERT_TRUE(semBuzzer(PINOS_DIGITAIS, QUANTIDADE_DIGITAIS));
+}
+
+void test_payload_com_todos_os_canais_cabe_no_buffer_do_firmware() {
+  const size_t n = montarDaPlaca(-1);
+  Medida medidas[MAXIMO_SENSORES];
+  for (size_t i = 0; i < n; i++) {
+    medidas[i] = avaliarMedida(canais[i], canais[i].fonte == Fonte::Analogico ? 4095.0f : PULSOS_MAX);
+  }
+  TEST_ASSERT_EQUAL(static_cast<int>(n), static_cast<int>(contarValidas(medidas, n)));
+  char buffer[768];
+  TEST_ASSERT_EQUAL(static_cast<int>(Rejeicao::Nenhuma),
+                    static_cast<int>(montarPayload(MAC, AGORA, medidas, n, buffer, sizeof buffer)));
+  TEST_ASSERT_NOT_NULL(std::strstr(buffer, "\"pu34\":100000.00"));
+  TEST_ASSERT_NOT_NULL(std::strstr(buffer, "\"an39\":4095.00"));
+}
+
+// Mantém o nível por n amostras seguidas.
+void manter(CanalPulsos& c, bool alto, int n = CanalPulsos::AMOSTRAS_ESTAVEIS) {
+  for (int i = 0; i < n; i++) c.amostrar(alto);
+}
+
+void test_primeira_amostra_so_define_o_nivel() {
+  CanalPulsos c;
+  TEST_ASSERT_FALSE(c.amostrar(false));
+  TEST_ASSERT_FALSE(c.amostrar(false));
+  TEST_ASSERT_EQUAL_UINT32(0, c.total());
+}
+
+void test_conta_o_contato_fechando() {
+  CanalPulsos c;
+  c.amostrar(true);
+  manter(c, false, CanalPulsos::AMOSTRAS_ESTAVEIS - 1);
+  TEST_ASSERT_EQUAL_UINT32(0, c.total());
+  TEST_ASSERT_TRUE(c.amostrar(false));
+  manter(c, true);
+  manter(c, false);
+  TEST_ASSERT_EQUAL_UINT32(2, c.total());
+}
+
+void test_quique_curto_nao_vira_pulso() {
+  CanalPulsos c;
+  c.amostrar(true);
+  for (int i = 0; i < 5; i++) {
+    manter(c, false, CanalPulsos::AMOSTRAS_ESTAVEIS - 1);
+    c.amostrar(true);
+  }
+  TEST_ASSERT_EQUAL_UINT32(0, c.total());
+  manter(c, false);
+  manter(c, true);
+  manter(c, false);
+  TEST_ASSERT_EQUAL_UINT32(2, c.total());
+}
+
+void test_vaivem_do_ima_conta_uma_vez_so() {
+  CanalPulsos c;
+  manter(c, true);
+  // Contato fecha, abre por 10 ms e fecha de novo enquanto o ímã passa.
+  manter(c, false, 6);
+  manter(c, true, 2);
+  manter(c, false, 6);
+  manter(c, true, 40);
+  TEST_ASSERT_EQUAL_UINT32(1, c.total());
+}
+
+void test_contato_parado_fechado_nao_conta_de_novo() {
+  CanalPulsos c;
+  c.amostrar(true);
+  manter(c, false, 100);
+  TEST_ASSERT_EQUAL_UINT32(1, c.total());
+}
+
+void test_analogico_com_histerese() {
+  TEST_ASSERT_FALSE(nivelAnalogico(0, true));
+  TEST_ASSERT_FALSE(nivelAnalogico(LIMIAR_BAIXO, true));
+  TEST_ASSERT_TRUE(nivelAnalogico(LIMIAR_ALTO, false));
+  TEST_ASSERT_TRUE(nivelAnalogico(4095, false));
+  TEST_ASSERT_TRUE(nivelAnalogico(2000, true));
+  TEST_ASSERT_FALSE(nivelAnalogico(2000, false));
+}
+
+void test_pulso_em_pino_analogico_com_pull_up_da_placa() {
+  CanalPulsos c;
+  const int leituras[] = {4095, 4090, 2000, 300, 120, 200, 150, 2100, 3900, 4095, 4095, 4095, 4095};
+  for (int valor : leituras) c.amostrar(nivelAnalogico(valor, c.alto));
+  TEST_ASSERT_EQUAL_UINT32(1, c.total());
+}
+
+void test_pulsos_publicados_saem_da_contagem_e_os_novos_ficam() {
+  CanalPulsos c;
+  c.amostrar(true);
+  for (int i = 0; i < 5; i++) {
+    manter(c, false);
+    manter(c, true);
+  }
+  const uint32_t enviado = c.total();
+  manter(c, false);
+  c.descontar(enviado);
+  TEST_ASSERT_EQUAL_UINT32(1, c.total());
+}
+
+void test_pulsos_nao_publicados_acumulam_para_o_proximo_envio() {
+  CanalPulsos c;
+  c.pendentes = 2;
+  c.pendentes++;
+  const Medida m = avaliarMedida(Sensor{"pu26", Fonte::Pulsos, 26}, static_cast<float>(c.total()));
+  TEST_ASSERT_TRUE(m.ok);
+  TEST_ASSERT_EQUAL_FLOAT(3.0f, m.valor);
+}
+
+void test_descontar_mais_que_o_pendente_nao_estoura() {
+  CanalPulsos c;
+  c.pendentes = 1;
+  c.descontar(5);
+  TEST_ASSERT_EQUAL_UINT32(0, c.total());
+}
+
+void test_fila_sai_na_ordem_em_que_entrou() {
+  FilaEnvio<3, 16> f;
+  TEST_ASSERT_TRUE(f.vazia());
+  TEST_ASSERT_NULL(f.primeira());
+  f.guardar("a");
+  f.guardar("b");
+  TEST_ASSERT_EQUAL_UINT32(2, f.tamanho());
+  TEST_ASSERT_EQUAL_STRING("a", f.primeira());
+  f.remover();
+  TEST_ASSERT_EQUAL_STRING("b", f.primeira());
+  f.remover();
+  TEST_ASSERT_TRUE(f.vazia());
+  f.remover();
+  TEST_ASSERT_TRUE(f.vazia());
+}
+
+void test_fila_cheia_descarta_a_mais_antiga() {
+  FilaEnvio<3, 16> f;
+  const char* mensagens[] = {"1", "2", "3", "4", "5"};
+  for (const char* m : mensagens) f.guardar(m);
+  TEST_ASSERT_EQUAL_UINT32(3, f.tamanho());
+  TEST_ASSERT_EQUAL_UINT32(2, f.descartadas());
+  TEST_ASSERT_EQUAL_STRING("3", f.primeira());
+  f.remover();
+  f.guardar("6");
+  TEST_ASSERT_EQUAL_STRING("4", f.primeira());
+  f.remover();
+  TEST_ASSERT_EQUAL_STRING("5", f.primeira());
+  f.remover();
+  TEST_ASSERT_EQUAL_STRING("6", f.primeira());
+}
+
+void test_fila_recusa_mensagem_maior_que_o_item() {
+  FilaEnvio<2, 4> f;
+  TEST_ASSERT_FALSE(f.guardar("abcd"));
+  TEST_ASSERT_TRUE(f.vazia());
+  TEST_ASSERT_TRUE(f.guardar("abc"));
+  TEST_ASSERT_EQUAL_STRING("abc", f.primeira());
+}
+
+void test_fila_guarda_o_payload_completo_da_placa() {
+  Sensor canaisTeste[MAXIMO_SENSORES];
+  char nomes[MAXIMO_SENSORES][TAMANHO_NOME_CANAL];
+  const size_t n = montarCanais(PINO_DHT, PINOS_ANALOGICOS, QUANTIDADE_ANALOGICOS, PINOS_DIGITAIS,
+                                QUANTIDADE_DIGITAIS, canaisTeste, nomes, MAXIMO_SENSORES);
+  Medida medidas[MAXIMO_SENSORES];
+  for (size_t i = 0; i < n; i++) medidas[i] = avaliarMedida(canaisTeste[i], 4095.0f);
+  medidas[0] = avaliarMedida(canaisTeste[0], -12.5f);
+  medidas[1] = avaliarMedida(canaisTeste[1], 99.9f);
+  char buffer[768];
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(Rejeicao::Nenhuma),
+                        static_cast<int>(montarPayload(MAC, AGORA, medidas, n, buffer, sizeof buffer)));
+  static FilaEnvio<2, 768> f;
+  TEST_ASSERT_TRUE(f.guardar(buffer));
+  TEST_ASSERT_EQUAL_STRING(buffer, f.primeira());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_intervalo_aceita_limites_e_rejeita_fora_da_faixa);
@@ -264,5 +862,57 @@ int main() {
   RUN_TEST(test_coleta_bem_sucedida_zera_as_falhas_seguidas);
   RUN_TEST(test_resumo_mostra_reconexoes);
   RUN_TEST(test_espera_de_reconexao_cresce_ate_60_segundos);
+  RUN_TEST(test_configuracao_so_com_dht22_e_valida);
+  RUN_TEST(test_configuracao_aceita_sensores_adicionais);
+  RUN_TEST(test_configuracao_vazia_ou_grande_demais_e_recusada);
+  RUN_TEST(test_identificador_invalido_na_configuracao_e_recusado);
+  RUN_TEST(test_identificador_repetido_ou_reservado_e_recusado);
+  RUN_TEST(test_entrada_analogica_so_nos_pinos_que_funcionam_com_wifi);
+  RUN_TEST(test_faixa_valida_depende_da_fonte);
+  RUN_TEST(test_medida_guarda_o_identificador_e_o_valor_bruto);
+  RUN_TEST(test_payload_com_varios_sensores_tem_um_campo_por_sensor);
+  RUN_TEST(test_falha_de_um_sensor_nao_impede_o_envio_dos_demais);
+  RUN_TEST(test_nenhuma_medida_valida_nao_monta_payload);
+  RUN_TEST(test_payload_com_o_maximo_de_sensores_cabe_no_buffer_do_firmware);
+  RUN_TEST(test_estacao_so_com_dht22_gera_o_mesmo_payload_de_antes);
+  RUN_TEST(test_falha_curta_nao_toca);
+  RUN_TEST(test_falha_persistente_toca_depois_de_30_minutos);
+  RUN_TEST(test_falha_que_volta_reinicia_a_contagem);
+  RUN_TEST(test_alarme_repete_a_cada_30_minutos_enquanto_durar);
+  RUN_TEST(test_configuracao_invalida_toca_na_hora);
+  RUN_TEST(test_nova_falha_durante_o_alarme_toca_na_hora_com_as_duas);
+  RUN_TEST(test_avisa_uma_vez_quando_normaliza);
+  RUN_TEST(test_falha_que_nao_chegou_a_tocar_nao_avisa_normalizacao);
+  RUN_TEST(test_alarme_continua_certo_quando_millis_da_a_volta);
+  RUN_TEST(test_cada_falha_tem_um_codigo_de_bipes);
+  RUN_TEST(test_bipador_toca_o_codigo_sem_bloquear);
+  RUN_TEST(test_bipador_normalizou_sem_bipes_de_codigo);
+  RUN_TEST(test_bipador_abertura_e_curta);
+  RUN_TEST(test_bipador_parado_fica_desligado);
+  RUN_TEST(test_bipador_com_todas_as_falhas_toca_os_14_bipes);
+  RUN_TEST(test_pulsos_aceita_inteiro_nao_negativo_e_recusa_o_resto);
+  RUN_TEST(test_pulsos_em_qualquer_pino_de_entrada_e_digital_so_com_pull_up);
+  RUN_TEST(test_pino_compartilhado_so_entre_dht22_e_entre_valor_e_pulsos);
+  RUN_TEST(test_canais_da_placa_com_dht22_no_gpio4);
+  RUN_TEST(test_dht22_em_outro_pino_libera_o_gpio4_para_pulsos);
+  RUN_TEST(test_sem_dht22_nao_ha_temperatura_nem_umidade);
+  RUN_TEST(test_canais_nao_passam_do_maximo);
+  RUN_TEST(test_dht22_so_e_procurado_em_pino_digital_lido);
+  RUN_TEST(test_buzzer_fora_dos_pinos_lidos);
+  RUN_TEST(test_payload_com_todos_os_canais_cabe_no_buffer_do_firmware);
+  RUN_TEST(test_primeira_amostra_so_define_o_nivel);
+  RUN_TEST(test_conta_o_contato_fechando);
+  RUN_TEST(test_quique_curto_nao_vira_pulso);
+  RUN_TEST(test_vaivem_do_ima_conta_uma_vez_so);
+  RUN_TEST(test_contato_parado_fechado_nao_conta_de_novo);
+  RUN_TEST(test_analogico_com_histerese);
+  RUN_TEST(test_pulso_em_pino_analogico_com_pull_up_da_placa);
+  RUN_TEST(test_pulsos_publicados_saem_da_contagem_e_os_novos_ficam);
+  RUN_TEST(test_pulsos_nao_publicados_acumulam_para_o_proximo_envio);
+  RUN_TEST(test_descontar_mais_que_o_pendente_nao_estoura);
+  RUN_TEST(test_fila_sai_na_ordem_em_que_entrou);
+  RUN_TEST(test_fila_cheia_descarta_a_mais_antiga);
+  RUN_TEST(test_fila_recusa_mensagem_maior_que_o_item);
+  RUN_TEST(test_fila_guarda_o_payload_completo_da_placa);
   return UNITY_END();
 }

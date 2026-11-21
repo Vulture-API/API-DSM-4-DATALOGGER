@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "leitura.h"
+#include "sensores.h"
 
 namespace coleta {
 
@@ -11,9 +12,14 @@ namespace coleta {
 constexpr uint32_t UNIX_TIME_MINIMO = 1704067200;
 
 // local_identifier dos sensores cadastrados para a estação no backend.
+// Construtor explícito: o core Arduino do ESP32 compila em C++11, que não
+// aceita Identificadores{a, b} em struct com valor padrão nos campos.
 struct Identificadores {
-  const char* temperatura = "temp";
-  const char* umidade = "umid";
+  const char* temperatura;
+  const char* umidade;
+
+  constexpr Identificadores(const char* temperaturaId = "temp", const char* umidadeId = "umid")
+      : temperatura(temperaturaId), umidade(umidadeId) {}
 };
 
 enum class Rejeicao {
@@ -34,6 +40,11 @@ bool macValido(const char* mac);
 // sem nenhuma, a mensagem não é montada.
 Rejeicao montarPayload(const char* mac, uint32_t unixTime, const Leitura& leitura,
                        const Identificadores& ids, char* destino, size_t tamanho);
+
+// Mesmo contrato, com um campo por medida válida (SCRUM-603). Medida que
+// falhou não entra; sem nenhuma válida, a mensagem não é montada.
+Rejeicao montarPayload(const char* mac, uint32_t unixTime, const Medida* medidas, size_t quantidade,
+                       char* destino, size_t tamanho);
 
 // estacoes/<MAC>/dados
 bool montarTopico(const char* mac, char* destino, size_t tamanho);

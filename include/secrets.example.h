@@ -4,6 +4,8 @@
 #define WIFI_SSID "nome-da-rede"
 #define WIFI_PASSWORD "senha-da-rede"
 
+// IP do computador que roda o broker, na mesma rede Wi-Fi do ESP32 (2,4 GHz).
+// Não use "localhost": para o ESP32, localhost é ele mesmo.
 #define MQTT_HOST "192.168.0.10"
 #define MQTT_PORT 1883
 // Deixe vazio se o broker não exige autenticação (padrão do INFRA local).
